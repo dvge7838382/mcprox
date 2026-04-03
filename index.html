@@ -35,9 +35,9 @@
 </div>
 
 <script>
-const SERVER = window.location.hostname === "localhost" || window.location.hostname === "" 
+const SERVER = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
     ? "ws://localhost:3000" 
-    : "wss://" + window.location.hostname;
+    : "wss://" + window.location.host;
 
 let ws = null, stream = null, mediaRecorder = null, myIgn = "";
 let mediaSource = new MediaSource();
