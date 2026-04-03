@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voice Rooms - Low Latency</title>
+    <title>Voice Rooms - 60ms Production</title>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         body { background: #6b8fa3; font-family: 'Press Start 2P', cursive; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
         .menu { width: 500px; background: #c6c6c6; border: 6px solid #000; padding: 20px; text-align: center; box-shadow: inset -4px -4px #555, inset 4px 4px #fff; }
         .button { background: #c6c6c6; border: 4px solid #000; padding: 12px; cursor: pointer; margin-top: 10px; box-shadow: inset -3px -3px #555, inset 3px 3px #fff; font-size: 10px; }
         .button:hover { background: #b0b0b0; }
+        .button:active { box-shadow: inset 3px 3px #555, inset -3px -3px #fff; }
         input { width: 85%; padding: 10px; margin-top: 10px; border: 3px solid #000; font-family: 'Press Start 2P', cursive; font-size: 10px; }
         .hidden { display: none; }
         #status2 { font-size: 8px; margin-top: 12px; color: #333; }
@@ -35,9 +36,13 @@
 </div>
 
 <script>
+/** * THE SERVER LINE: 
+ * If you are on localhost, it uses port 3000. 
+ * If you are on Render, it uses the secure "wss" protocol and your website name.
+ */
 const SERVER = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
     ? "ws://localhost:3000" 
-    : "wss://" + window.location.host;
+    : (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
 
 let ws = null, stream = null, mediaRecorder = null, myIgn = "";
 let mediaSource = new MediaSource();
@@ -47,30 +52,24 @@ let queue = [];
 function setupAudioPlayer() {
     const audio = new Audio();
     audio.src = URL.createObjectURL(mediaSource);
-    
     mediaSource.addEventListener('sourceopen', () => {
-        // 'sequence' mode is vital for low-latency streaming
         sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
         sourceBuffer.mode = 'sequence'; 
-
         sourceBuffer.addEventListener('updateend', () => {
-            if (queue.length > 0 && !sourceBuffer.updating) {
-                sourceBuffer.appendBuffer(queue.shift());
-            }
+            if (queue.length > 0 && !sourceBuffer.updating) sourceBuffer.appendBuffer(queue.shift());
         });
     });
-    // Set volume to max and play
-    audio.play().catch(() => console.log("Interaction needed for audio"));
+    audio.play().catch(() => console.log("Click Join to enable audio"));
 }
 
 async function joinRoom() {
     const ign = document.getElementById("ignInput").value.trim();
     const roomId = document.getElementById("roomCodeInput").value.trim();
     if (!ign || !roomId) return;
-
     myIgn = ign;
     setupAudioPlayer();
-
+    
+    setStatus("Connecting...");
     ws = new WebSocket(SERVER);
 
     ws.onopen = () => {
@@ -86,52 +85,39 @@ async function joinRoom() {
         if (msg.type === "players") updatePlayerList(msg.players);
         if (msg.type === "audio") {
             const buffer = base64ToArrayBuffer(msg.data);
-            if (sourceBuffer && !sourceBuffer.updating) {
-                sourceBuffer.appendBuffer(buffer);
-            } else {
-                queue.push(buffer);
-            }
+            if (sourceBuffer && !sourceBuffer.updating) sourceBuffer.appendBuffer(buffer);
+            else queue.push(buffer);
         }
     };
+
+    ws.onerror = () => setStatus("Connection Failed!");
 }
 
 async function startMic() {
     try {
-        // Optimized constraints for real-time communication
         stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                latency: 0 // Request lowest possible latency from the OS
-            } 
+            audio: { echoCancellation: true, noiseSuppression: true, latency: 0 } 
         });
-
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm; codecs="opus"' });
-        
+        mediaRecorder = new MediaRecorder(stream, { 
+            mimeType: 'audio/webm; codecs="opus"',
+            audioBitsPerSecond: 32000 
+        });
         mediaRecorder.ondataavailable = async (e) => {
             if (e.data.size > 0 && ws && ws.readyState === 1) {
                 const buffer = await e.data.arrayBuffer();
                 ws.send(JSON.stringify({ type: "audio", data: arrayBufferToBase64(buffer) }));
             }
         };
-
-        // Reduced from 250ms to 100ms for faster transmission
-        mediaRecorder.start(100); 
-        document.getElementById("status2").innerText = "🎙 MIC ACTIVE";
-    } catch (err) {
-        alert("Mic error. Use HTTPS or localhost.");
-    }
+        mediaRecorder.start(60); // 60ms Ultra-Low Latency
+        document.getElementById("status2").innerText = "🎙 LIVE @ 60ms";
+    } catch (err) { alert("Mic Error: Use HTTPS or Localhost."); }
 }
 
 function updatePlayerList(players) {
-    const list = document.getElementById("playerList");
-    list.innerHTML = players
-        .map(p => `<div class="player-entry"><span class="dot"></span>${p}${p === myIgn ? " (you)" : ""}</div>`)
-        .join("");
+    document.getElementById("playerList").innerHTML = players
+        .map(p => `<div class="player-entry"><span class="dot"></span>${p}${p===myIgn?' (you)':''}</div>`).join("");
 }
 
-// Performance-focused conversion helpers
 function arrayBufferToBase64(buffer) {
     let binary = "";
     const bytes = new Uint8Array(buffer);
@@ -145,6 +131,8 @@ function base64ToArrayBuffer(base64) {
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes.buffer;
 }
+
+function setStatus(msg) { document.getElementById("status").innerText = msg; }
 </script>
 </body>
 </html>
