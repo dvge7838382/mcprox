@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voice Rooms - 60ms Production</title>
+    <title>Minecraft Bedrock Prox Chat</title>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         body { background: #6b8fa3; font-family: 'Press Start 2P', cursive; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
@@ -12,7 +12,7 @@
         .button:active { box-shadow: inset 3px 3px #555, inset -3px -3px #fff; }
         input { width: 85%; padding: 10px; margin-top: 10px; border: 3px solid #000; font-family: 'Press Start 2P', cursive; font-size: 10px; }
         .hidden { display: none; }
-        #status2 { font-size: 8px; margin-top: 12px; color: #333; }
+        #status, #status2 { font-size: 8px; margin-top: 12px; color: #333; height: 10px; }
         .player-entry { padding: 8px 0; border-bottom: 2px solid #aaa; font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
         .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; display: inline-block; }
     </style>
@@ -36,13 +36,8 @@
 </div>
 
 <script>
-/** * THE SERVER LINE: 
- * If you are on localhost, it uses port 3000. 
- * If you are on Render, it uses the secure "wss" protocol and your website name.
- */
-const SERVER = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-    ? "ws://localhost:3000" 
-    : (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
+// HARDCODED SERVER FOR RENDER
+const SERVER = "wss://minecraft-bedrock-prox-chat.onrender.com";
 
 let ws = null, stream = null, mediaRecorder = null, myIgn = "";
 let mediaSource = new MediaSource();
@@ -59,17 +54,21 @@ function setupAudioPlayer() {
             if (queue.length > 0 && !sourceBuffer.updating) sourceBuffer.appendBuffer(queue.shift());
         });
     });
-    audio.play().catch(() => console.log("Click Join to enable audio"));
+    audio.play().catch(() => console.log("Audio started via user gesture"));
 }
 
 async function joinRoom() {
     const ign = document.getElementById("ignInput").value.trim();
     const roomId = document.getElementById("roomCodeInput").value.trim();
-    if (!ign || !roomId) return;
+    if (!ign || !roomId) {
+        alert("Please enter IGN and Room Code");
+        return;
+    }
+
     myIgn = ign;
     setupAudioPlayer();
-    
-    setStatus("Connecting...");
+    setStatus("Connecting to Render...");
+
     ws = new WebSocket(SERVER);
 
     ws.onopen = () => {
@@ -81,22 +80,32 @@ async function joinRoom() {
     };
 
     ws.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "players") updatePlayerList(msg.players);
-        if (msg.type === "audio") {
-            const buffer = base64ToArrayBuffer(msg.data);
-            if (sourceBuffer && !sourceBuffer.updating) sourceBuffer.appendBuffer(buffer);
-            else queue.push(buffer);
-        }
+        try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "players") updatePlayerList(msg.players);
+            if (msg.type === "audio") {
+                const buffer = base64ToArrayBuffer(msg.data);
+                if (sourceBuffer && !sourceBuffer.updating) {
+                    sourceBuffer.appendBuffer(buffer);
+                } else {
+                    queue.push(buffer);
+                }
+            }
+        } catch (e) { console.error("Data error", e); }
     };
 
-    ws.onerror = () => setStatus("Connection Failed!");
+    ws.onerror = (err) => {
+        setStatus("Connection Failed! Is the server live?");
+        console.error("WS Error:", err);
+    };
+
+    ws.onclose = () => setStatus("Disconnected from server.");
 }
 
 async function startMic() {
     try {
         stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: { echoCancellation: true, noiseSuppression: true, latency: 0 } 
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, latency: 0 } 
         });
         mediaRecorder = new MediaRecorder(stream, { 
             mimeType: 'audio/webm; codecs="opus"',
@@ -108,9 +117,11 @@ async function startMic() {
                 ws.send(JSON.stringify({ type: "audio", data: arrayBufferToBase64(buffer) }));
             }
         };
-        mediaRecorder.start(60); // 60ms Ultra-Low Latency
+        mediaRecorder.start(60); 
         document.getElementById("status2").innerText = "🎙 LIVE @ 60ms";
-    } catch (err) { alert("Mic Error: Use HTTPS or Localhost."); }
+    } catch (err) { 
+        alert("Mic Error: Please ensure you are using HTTPS and have allowed mic access."); 
+    }
 }
 
 function updatePlayerList(players) {
@@ -132,7 +143,10 @@ function base64ToArrayBuffer(base64) {
     return bytes.buffer;
 }
 
-function setStatus(msg) { document.getElementById("status").innerText = msg; }
+function setStatus(msg) { 
+    const statusDiv = document.getElementById("status");
+    if (statusDiv) statusDiv.innerText = msg; 
+}
 </script>
 </body>
 </html>
