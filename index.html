@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Voice Rooms</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body { background: #6b8fa3; font-family: 'Press Start 2P', cursive; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .menu { width: 500px; background: #c6c6c6; border: 6px solid #000; padding: 20px; text-align: center; box-shadow: inset -4px -4px #555, inset 4px 4px #fff; }
+        .button { background: #c6c6c6; border: 4px solid #000; padding: 12px; cursor: pointer; margin-top: 10px; box-shadow: inset -3px -3px #555, inset 3px 3px #fff; font-size: 12px; }
+        .button:hover { background: #b0b0b0; }
+        .button:active { box-shadow: inset 3px 3px #555, inset -3px -3px #fff; }
+        input { width: 90%; padding: 10px; margin-top: 10px; border: 3px solid #000; font-family: 'Press Start 2P', cursive; font-size: 10px; }
+        .hidden { display: none; }
+        #status, #status2 { font-size: 8px; margin-top: 8px; color: #333; }
+        .player-entry { padding: 6px 0; border-bottom: 2px solid #aaa; font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; display: inline-block; }
+    </style>
+</head>
+<body>
+
+<div class="menu" id="mainMenu">
+    <h3>bhuvesh is a girl</h3>
+    <input id="ignInput" placeholder="Enter IGN">
+    <input id="roomCodeInput" placeholder="Enter Room Code">
+    <div class="button" onclick="joinRoom()">Join</div>
+    <div id="status"></div>
+</div>
+
+<div class="menu hidden" id="roomMenu">
+    <div id="roomTitle"></div>
+    <h4>Players:</h4>
+    <div id="playerList"></div>
+    <div class="button" onclick="leaveRoom()">Leave Room</div>
+    <div id="status2"></div>
+</div>
+
+<script>
+// UPDATE THIS URL to your actual deployed server URL (e.g., wss://your-app.onrender.com)
+const SERVER = window.location.hostname === "localhost" 
+    ? "ws://localhost:3000" 
+    : "wss://" + window.location.hostname; 
+
+let ws = null;
+let stream = null;
+let mediaRecorder = null;
+let myIgn = "";
+let myRoom = "";
+
+// Global Audio Context (needs user gesture to start)
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+async function joinRoom() {
+    const ign = document.getElementById("ignInput").value.trim();
+    const roomId = document.getElementById("roomCodeInput").value.trim();
+
+    if (!ign || !roomId) {
+        alert("Enter IGN and Room Code");
+        return;
+    }
+
+    // FIX 1: Resume AudioContext on user click (Browser security requirement)
+    if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+    }
+
+    myIgn = ign;
+    myRoom = roomId;
+    setStatus("Connecting...");
+
+    ws = new WebSocket(SERVER);
+
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "join", ign, roomId }));
+        document.getElementById("mainMenu").classList.add("hidden");
+        document.getElementById("roomMenu").classList.remove("hidden");
+        document.getElementById("roomTitle").innerText = "Room: " + roomId;
+        setStatus2("Connected ✓");
+        startMic();
+    };
+
+    ws.onmessage = async (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "players") updatePlayerList(msg.players);
+            if (msg.type === "audio") playAudioChunk(msg.data);
+        } catch (e) {
+            console.error("Message error:", e);
+        }
+    };
+
+    ws.onclose = () => {
+        setStatus2("Disconnected");
+        stopMic();
+    };
+
+    ws.onerror = () => setStatus("Connection failed.");
+}
+
+function updatePlayerList(players) {
+    const list = document.getElementById("playerList");
+    list.innerHTML = players
+        .map(p => `<div class="player-entry"><span class="dot"></span>${p}${p === myIgn ? " (you)" : ""}</div>`)
+        .join("");
+}
+
+async function startMic() {
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = getSupportedMime();
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+        
+        mediaRecorder.ondataavailable = async (e) => {
+            if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                const buffer = await e.data.arrayBuffer();
+                const base64 = arrayBufferToBase64(buffer);
+                ws.send(JSON.stringify({ type: "audio", data: base64 }));
+            }
+        };
+
+        mediaRecorder.start(250); // Sent in 250ms chunks for better stability
+        setStatus2("🎙 Mic ON");
+    } catch (err) {
+        alert("Mic access denied. Internet release requires HTTPS.");
+    }
+}
+
+// FIX 2: Use Blob URLs for more reliable fragment playback
+function playAudioChunk(base64) {
+    try {
+        const arrayBuffer = base64ToArrayBuffer(base64);
+        const blob = new Blob([arrayBuffer], { type: getSupportedMime() });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        
+        audio.play().catch(e => { /* Ignore small chunk errors */ });
+        
+        // Cleanup memory
+        audio.onended = () => {
+            URL.revokeObjectURL(url);
+            audio.remove();
+        };
+    } catch (e) {
+        console.error("Playback failed", e);
+    }
+}
+
+function stopMic() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    if (stream) stream.getTracks().forEach(t => t.stop());
+}
+
+function leaveRoom() {
+    stopMic();
+    if (ws) ws.close();
+    document.getElementById("roomMenu").classList.add("hidden");
+    document.getElementById("mainMenu").classList.remove("hidden");
+}
+
+function getSupportedMime() {
+    const types = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus"];
+    return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+function arrayBufferToBase64(buffer) {
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
+function setStatus(msg) { document.getElementById("status").innerText = msg; }
+function setStatus2(msg) { document.getElementById("status2").innerText = msg; }
+</script>
+</body>
+</html>
