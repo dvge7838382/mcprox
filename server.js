@@ -1,58 +1,29 @@
 const { WebSocketServer } = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
-const server = http.createServer((req, res) => { res.writeHead(200); res.end("Server Online"); });
-const wss = new WebSocketServer({ server });
-
-const roomSync = new Map(); 
-const roomClients = new Map(); 
-
-wss.on('connection', (ws) => {
-    let myRoom = null, myName = null;
-
-    ws.on('message', (data) => {
-        try {
-            const msg = JSON.parse(data);
-
-            if (msg.type === 'sync_rules') {
-                roomSync.set(msg.roomId, msg.rules);
-                return;
+// THIS SECTION SENDS THE HTML FILE TO YOUR BROWSER
+const server = http.createServer((req, res) => {
+    // If the user visits the main page or index.html
+    if (req.url === '/' || req.url === '/index.html') {
+        const filePath = path.join(__dirname, 'index.html');
+        fs.readFile(filePath, (err, data) => {
+            if (err) {
+                res.writeHead(500);
+                return res.end("Error loading index.html - Make sure the file is in the same folder as server.js");
             }
-
-            if (msg.type === 'join') {
-                myRoom = msg.roomId; myName = msg.ign;
-                if (!roomClients.has(myRoom)) roomClients.set(myRoom, new Map());
-                roomClients.get(myRoom).set(myName, ws);
-                broadcast(myRoom);
-            }
-
-            if (msg.type === 'audio' && myRoom) {
-                const rules = roomSync.get(myRoom) || [];
-                roomClients.get(myRoom).forEach((client, target) => {
-                    if (target === myName) return;
-                    const rule = rules.find(r => 
-                        (r.a.toLowerCase() === myName.toLowerCase() && r.b.toLowerCase() === target.toLowerCase()) || 
-                        (r.a.toLowerCase() === target.toLowerCase() && r.b.toLowerCase() === myName.toLowerCase())
-                    );
-                    if (rule && rule.v > 0) {
-                        client.send(JSON.stringify({ type: 'audio', data: msg.data, volume: rule.v, from: myName }));
-                    }
-                });
-            }
-        } catch (e) {}
-    });
-
-    ws.on('close', () => {
-        if (myRoom && roomClients.has(myRoom)) {
-            roomClients.get(myRoom).delete(myName);
-            broadcast(myRoom);
-        }
-    });
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end(data);
+        });
+    } else {
+        res.writeHead(404);
+        res.end("Not Found");
+    }
 });
 
-function broadcast(roomId) {
-    const names = Array.from(roomClients.get(roomId).keys());
-    roomClients.get(roomId).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
-}
+// ... (The rest of your WebSocket / wss code goes here) ...
 
-server.listen(process.env.PORT || 10000);
+server.listen(process.env.PORT || 10000, () => {
+    console.log("Server is running and serving index.html");
+});
