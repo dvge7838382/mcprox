@@ -1,122 +1,135 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PROX VC V4</title>
+    <title>PROXIMITY_ULTIMATE</title>
     <style>
-        body { background: #0a0a0a; color: #00ff41; font-family: monospace; text-align: center; padding: 50px; }
-        .ui-card { background: #1a1a1a; border: 1px solid #00ff41; padding: 25px; border-radius: 5px; display: inline-block; min-width: 300px; }
-        input { background: #000; border: 1px solid #00ff41; color: #00ff41; padding: 10px; margin: 10px; width: 80%; }
-        button { background: #00ff41; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; width: 88%; }
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        .box { border: 1px solid #0f0; padding: 20px; max-width: 400px; margin: auto; background: #050505; }
+        .log { background: #111; color: #888; font-size: 10px; height: 100px; overflow-y: scroll; text-align: left; padding: 5px; margin-top: 10px; border: 1px solid #222; }
+        .player { border: 1px solid #333; padding: 10px; margin: 5px 0; text-align: left; }
+        .meter { height: 4px; background: #0f0; width: 0%; }
+        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 8px; margin: 5px; width: 80%; }
+        button { background: #0f0; color: #000; border: none; padding: 10px; width: 85%; font-weight: bold; cursor: pointer; }
         .hidden { display: none; }
-        .player-box { background: #222; margin: 10px 0; padding: 10px; border-left: 3px solid #00ff41; text-align: left; }
-        .bar { height: 4px; background: #00ff41; width: 0%; transition: width 0.15s; }
     </style>
 </head>
 <body>
 
-    <div id="login" class="ui-card">
-        <h2>TERMINAL_LOGIN</h2>
-        <input id="ign" placeholder="USER_ID (MC NAME)"> <br>
-        <input id="room" placeholder="ROOM_CODE (12 DIGITS)"> <br>
-        <button onclick="start()">INITIATE_LINK</button>
-    </div>
+<div id="login" class="box">
+    <h2>SYSTEM_LOGIN</h2>
+    <input id="ign" placeholder="MINECRAFT_NAME">
+    <input id="room" placeholder="TRACKER_CODE">
+    <button onclick="init()">CONNECT_TO_NODE</button>
+</div>
 
-    <div id="dashboard" class="ui-card hidden">
-        <h3 id="room-id">STATUS: CONNECTED</h3>
-        <div id="p-list"></div>
-        <br>
-        <button id="fix-audio" class="hidden" onclick="wake()" style="background: #ff0000; color: #fff;">RE-SYNC AUDIO ENGINE</button>
-    </div>
+<div id="app" class="box hidden">
+    <h3>ACTIVE_CHANNEL: <span id="ch">--</span></h3>
+    <div id="p-list"></div>
+    <div id="log" class="log">Initializing diagnostic logs...</div>
+    <br>
+    <button id="fix" class="hidden" onclick="forceWake()" style="background: red; color: white;">! AUDIO_BLOCKED: CLICK TO FIX !</button>
+</div>
 
-    <script>
-        const WS_URL = window.location.origin.replace(/^http/, 'ws');
-        let ws, myName, audioCtx, masterGain;
-        let pGains = {}; 
+<script>
+    const WS_URL = window.location.origin.replace(/^http/, 'ws');
+    let ws, myName, audioCtx, masterGain;
+    let pGains = {};
 
-        async function start() {
-            myName = document.getElementById('ign').value.trim();
-            const rId = document.getElementById('room').value.trim();
-            if(!myName || !rId) return alert("FIELDS_EMPTY");
+    function log(msg) {
+        const l = document.getElementById('log');
+        l.innerHTML += `> ${msg}<br>`;
+        l.scrollTop = l.scrollHeight;
+    }
 
-            ws = new WebSocket(WS_URL);
-            ws.onopen = () => {
-                ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
-                document.getElementById('login').classList.add('hidden');
-                document.getElementById('dashboard').classList.remove('hidden');
-                document.getElementById('room-id').innerText = "ROOM_" + rId;
-                setupMic();
+    async function init() {
+        myName = document.getElementById('ign').value.trim();
+        const rId = document.getElementById('room').value.trim();
+        if(!myName || !rId) return;
+
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+            log("Connected to Render Server.");
+            ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            document.getElementById('ch').innerText = rId;
+            startMic();
+        };
+
+        ws.onmessage = async (e) => {
+            const m = JSON.parse(e.data);
+            if(m.type === 'players') render(m.players);
+            if(m.type === 'vol_update') m.rules.forEach(r => update(r));
+            if(m.type === 'audio') play(m.data, m.volume, m.from);
+        };
+    }
+
+    function render(list) {
+        document.getElementById('p-list').innerHTML = list.map(p => `
+            <div class="player">
+                ${p} ${p === myName ? '(YOU)' : ''}
+                ${p !== myName ? `<div id="bar-${p}" class="meter"></div>` : ''}
+            </div>
+        `).join('');
+    }
+
+    function update(r) {
+        const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
+        const el = document.getElementById(`bar-${target}`);
+        if(el) el.style.width = (r.v * 100) + "%";
+    }
+
+    async function startMic() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            log("Microphone Access Granted.");
+            const rec = new MediaRecorder(stream);
+            rec.ondataavailable = (e) => {
+                if(ws.readyState === 1 && e.data.size > 0) {
+                    const reader = new FileReader();
+                    reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
+                    reader.readAsDataURL(e.data);
+                }
             };
+            rec.start(250); // Small chunks = low lag
+        } catch(e) { log("ERR: Mic Blocked! Check HTTPS."); }
+    }
 
-            ws.onmessage = async (e) => {
-                const m = JSON.parse(e.data);
-                if(m.type === 'players') render(m.players);
-                if(m.type === 'vol_update') m.rules.forEach(r => update(r));
-                if(m.type === 'audio') play(m.data, m.volume, m.from);
-            };
+    function forceWake() {
+        if(audioCtx) audioCtx.resume();
+        document.getElementById('fix').classList.add('hidden');
+        log("AudioContext manually resumed.");
+    }
+
+    async function play(data, vol, from) {
+        if(!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.connect(audioCtx.destination);
+            log("Audio Output Engine Created.");
+        }
+        
+        if(audioCtx.state === 'suspended') {
+            document.getElementById('fix').classList.remove('hidden');
+            return;
         }
 
-        function render(list) {
-            document.getElementById('p-list').innerHTML = list.map(p => `
-                <div class="player-box">
-                    <span>${p} ${p === myName ? '(SELF)' : ''}</span>
-                    ${p !== myName ? `<div id="bar-${p}" class="bar"></div>` : ''}
-                </div>
-            `).join('');
-        }
-
-        function update(r) {
-            const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
-            const el = document.getElementById(`bar-${target}`);
-            if(el) el.style.width = (r.v * 100) + "%";
-        }
-
-        async function setupMic() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                const rec = new MediaRecorder(stream);
-                rec.ondataavailable = (e) => {
-                    if(ws.readyState === 1 && e.data.size > 0) {
-                        const reader = new FileReader();
-                        reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
-                        reader.readAsDataURL(e.data);
-                    }
-                };
-                rec.start(250);
-            } catch(e) { alert("MIC_ACCESS_DENIED"); }
-        }
-
-        function wake() {
-            if(audioCtx) audioCtx.resume();
-            document.getElementById('fix-audio').classList.add('hidden');
-        }
-
-        async function play(data, vol, from) {
-            if(!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                masterGain = audioCtx.createGain();
-                masterGain.connect(audioCtx.destination);
-            }
-            if(audioCtx.state === 'suspended') {
-                document.getElementById('fix-audio').classList.remove('hidden');
-                return;
-            }
-
-            try {
-                const b = Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer;
-                audioCtx.decodeAudioData(b, (decoded) => {
-                    const s = audioCtx.createBufferSource();
-                    if(!pGains[from]) {
-                        pGains[from] = audioCtx.createGain();
-                        pGains[from].connect(masterGain);
-                    }
-                    s.buffer = decoded;
-                    // FIX: Smoothing filter (0.1s ramp) keeps audio from cutting
-                    pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
-                    s.connect(pGains[from]);
-                    s.start(0);
-                });
-            } catch(e) {}
-        }
-    </script>
+        try {
+            const b = Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer;
+            audioCtx.decodeAudioData(b, (decoded) => {
+                const s = audioCtx.createBufferSource();
+                if(!pGains[from]) {
+                    pGains[from] = audioCtx.createGain();
+                    pGains[from].connect(masterGain);
+                }
+                s.buffer = decoded;
+                // Aggressive volume smoothing
+                pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+                s.connect(pGains[from]);
+                s.start(0);
+            }, (e) => log("Decode Error: Packet Corrupt"));
+        } catch(e) { log("Playback Error."); }
+    }
+</script>
 </body>
 </html>

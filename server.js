@@ -4,13 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 const server = http.createServer((req, res) => {
-    const filePath = path.resolve(__dirname, 'index.html');
-    fs.readFile(filePath, (err, data) => {
-        if (err) {
-            res.writeHead(404);
-            res.end("index.html not found");
-            return;
-        }
+    const file = path.resolve(__dirname, 'index.html');
+    fs.readFile(file, (err, data) => {
+        if (err) { res.writeHead(404); res.end("Missing index.html"); return; }
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(data);
     });
@@ -18,10 +14,12 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 const rooms = new Map(); 
-const syncs = new Map(); 
+const syncs = new Map();
 
 wss.on('connection', (ws) => {
     let myRoom = null, myName = null;
+    // Keep-alive ping
+    const heartbeat = setInterval(() => { if(ws.readyState === 1) ws.ping(); }, 20000);
 
     ws.on('message', (raw) => {
         try {
@@ -40,8 +38,8 @@ wss.on('connection', (ws) => {
             if (m.type === 'audio' && myRoom) {
                 const rules = syncs.get(myRoom) || [];
                 rooms.get(myRoom).forEach((client, name) => {
-                    if (name === myName) return;
-                    const rule = rules.find(r => (r.a === myName && r.b === name) || (r.a === name && r.b === currName));
+                    if (name === myName || client.readyState !== 1) return;
+                    const rule = rules.find(r => (r.a === myName && r.b === name) || (r.a === name && r.b === myName));
                     if (rule && rule.v > 0.01) {
                         client.send(JSON.stringify({ type: 'audio', data: m.data, volume: rule.v, from: myName }));
                     }
@@ -51,11 +49,8 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        if (myRoom && rooms.has(myRoom)) {
-            rooms.get(myRoom).delete(myName);
-            const names = Array.from(rooms.get(myRoom).keys());
-            rooms.get(myRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
-        }
+        clearInterval(heartbeat);
+        rooms.get(myRoom)?.delete(myName);
     });
 });
 
