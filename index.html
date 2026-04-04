@@ -1,29 +1,191 @@
-/* Inside your <script> tag */
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MC Proximity VC</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        /* RESET & BASE */
+        * { box-sizing: border-box; }
+        body { 
+            background: #4a4a4a; 
+            font-family: 'Press Start 2P', cursive; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            color: #fff;
+        }
 
-async function playSpatialAudio(base64, vol) {
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    
-    // Decode and Play
-    const arrayBuf = Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer;
-    const audioBuf = await audioCtx.decodeAudioData(arrayBuf).catch(() => null);
-    if (!audioBuf) return;
+        /* RETRO CONTAINER */
+        .container { 
+            width: 420px; 
+            background: #c6c6c6; 
+            border: 5px solid #000; 
+            padding: 30px; 
+            text-align: center; 
+            box-shadow: 8px 8px 0px rgba(0,0,0,0.5); 
+            color: #000;
+        }
 
-    const source = audioCtx.createBufferSource();
-    const gainNode = audioCtx.createGain();
+        h2 { font-size: 18px; margin-bottom: 20px; text-shadow: 2px 2px #fff; }
 
-    source.buffer = audioBuf;
-    gainNode.gain.value = vol; // Regulated by Server/Tracker!
+        /* INPUTS */
+        input { 
+            width: 100%; 
+            padding: 12px; 
+            margin-bottom: 15px; 
+            border: 4px solid #000; 
+            font-family: 'Press Start 2P'; 
+            font-size: 10px; 
+            outline: none;
+            background: #fff;
+        }
 
-    source.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    source.start();
-}
+        /* BUTTONS */
+        button { 
+            width: 100%; 
+            background: #5a5a5a; 
+            color: white; 
+            border: 4px solid #000; 
+            padding: 15px; 
+            cursor: pointer; 
+            font-family: 'Press Start 2P'; 
+            font-size: 12px;
+            transition: 0.1s;
+        }
+        button:hover { background: #7a7a7a; }
+        button:active { transform: translate(2px, 2px); }
 
-// When receiving from server
-ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'audio') {
-        playSpatialAudio(msg.data, msg.volume);
+        /* PLAYER LIST */
+        #player-list { 
+            margin: 15px 0; 
+            max-height: 150px; 
+            overflow-y: auto; 
+            background: #a0a0a0; 
+            border: 3px solid #000;
+            padding: 10px;
+        }
+        .player-tag { 
+            background: #eee; 
+            border: 2px solid #000; 
+            margin: 4px 0; 
+            padding: 5px; 
+            font-size: 10px; 
+            text-align: left;
+        }
+
+        /* UTILS */
+        .hidden { display: none !important; }
+        #mic-status { font-size: 10px; margin-top: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen" class="container">
+        <h2>VC LOGIN</h2>
+        <input type="text" id="user-ign" placeholder="MINECRAFT NAME" autocomplete="off">
+        <input type="text" id="user-code" placeholder="12-DIGIT CODE" autocomplete="off">
+        <button onclick="attemptJoin()">JOIN SESSION</button>
+    </div>
+
+    <div id="room-screen" class="container hidden">
+        <h2 id="room-id-display">ROOM: ---</h2>
+        <div style="font-size: 10px; margin-bottom: 5px;">PLAYERS ONLINE:</div>
+        <div id="player-list"></div>
+        <div id="mic-status" style="color: #aa0000;">🎙 INITIALIZING...</div>
+        <button onclick="location.reload()" style="margin-top: 20px; background: #8a0000;">LEAVE</button>
+    </div>
+
+<script>
+    const SERVER = "wss://minecraft-bedrock-prox-chat.onrender.com";
+    let ws, myIgn;
+    let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    async function attemptJoin() {
+        myIgn = document.getElementById('user-ign').value.trim();
+        const code = document.getElementById('user-code').value.trim();
+        
+        if(!myIgn || !code) {
+            alert("Please enter Name and Code!");
+            return;
+        }
+
+        // Start WebSocket
+        ws = new WebSocket(SERVER);
+        
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: 'join', ign: myIgn, roomId: code }));
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('room-screen').classList.remove('hidden');
+            document.getElementById('room-id-display').innerText = "ROOM: " + code;
+            startMic();
+        };
+
+        ws.onmessage = async (e) => {
+            const msg = JSON.parse(e.data);
+            if(msg.type === 'players') {
+                const list = document.getElementById('player-list');
+                list.innerHTML = msg.players.map(p => `
+                    <div class="player-tag">${p === myIgn ? "✔ " + p + " (YOU)" : "● " + p}</div>
+                `).join('');
+            }
+            if(msg.type === 'audio') {
+                playSpatialAudio(msg.data, msg.volume);
+            }
+        };
+
+        ws.onerror = () => alert("Server Connection Failed!");
     }
-};
+
+    async function startMic() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm; codecs=opus' });
+            
+            recorder.ondataavailable = async (e) => {
+                if(ws.readyState === 1 && e.data.size > 0) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const base64 = reader.result.split(',')[1];
+                        ws.send(JSON.stringify({ type: 'audio', data: base64 }));
+                    };
+                    reader.readAsDataURL(e.data);
+                }
+            };
+            recorder.start(150); // Send audio chunks every 150ms
+            document.getElementById('mic-status').innerText = "🎙 MIC ACTIVE";
+            document.getElementById('mic-status').style.color = "#006600";
+        } catch (err) {
+            document.getElementById('mic-status').innerText = "❌ MIC ERROR";
+            console.error(err);
+        }
+    }
+
+    async function playSpatialAudio(base64, vol) {
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        
+        try {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            
+            const audioBuf = await audioCtx.decodeAudioData(bytes.buffer);
+            const source = audioCtx.createBufferSource();
+            const gainNode = audioCtx.createGain();
+
+            source.buffer = audioBuf;
+            gainNode.gain.value = vol; // From Tracker App!
+
+            source.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            source.start();
+        } catch (e) {
+            // Silently ignore small decoding errors
+        }
+    }
+</script>
+</body>
+</html>
