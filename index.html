@@ -7,140 +7,132 @@
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         body { background: #333; font-family: 'Press Start 2P', cursive; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { background: #c6c6c6; border: 6px solid #000; padding: 30px; width: 450px; color: #000; text-align: center; box-shadow: 10px 10px 0px rgba(0,0,0,0.3); }
-        h2 { font-size: 16px; text-shadow: 2px 2px #fff; }
+        .container { background: #c6c6c6; border: 6px solid #000; padding: 30px; width: 500px; color: #000; text-align: center; box-shadow: 10px 10px 0px rgba(0,0,0,0.3); }
+        h2 { font-size: 16px; margin-bottom: 20px; }
         input { width: 100%; padding: 12px; margin: 10px 0; border: 4px solid #000; font-family: 'Press Start 2P'; font-size: 10px; outline: none; }
         button { width: 100%; background: #5a5a5a; color: #fff; padding: 15px; border: 4px solid #000; cursor: pointer; font-family: 'Press Start 2P'; font-size: 12px; margin-top: 10px; }
-        button:hover { background: #7a7a7a; }
         .hidden { display: none !important; }
-        #player-list { background: #a0a0a0; border: 3px solid #000; padding: 10px; margin: 15px 0; text-align: left; font-size: 10px; min-height: 50px; }
-        #status-light { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: red; margin-right: 8px; border: 2px solid #000; }
+        
+        /* VOLUME MIXER UI */
+        #mixer { background: #a0a0a0; border: 3px solid #000; padding: 15px; margin: 15px 0; text-align: left; }
+        .player-row { display: flex; justify-content: space-between; align-items: center; background: #eee; border: 2px solid #000; margin: 5px 0; padding: 8px; font-size: 10px; }
+        .vol-bar-bg { width: 100px; height: 10px; background: #555; border: 1px solid #000; position: relative; }
+        .vol-bar-fill { height: 100%; background: #00ff00; width: 0%; transition: width 0.3s; }
+        
+        #status { font-size: 10px; margin-top: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div id="login-screen" class="container">
-        <h2>PROXIMITY LOGIN</h2>
-        <p style="font-size: 8px;">(NAME MUST MATCH MINECRAFT)</p>
-        <input type="text" id="user-ign" placeholder="MC USERNAME" autocomplete="off">
-        <input type="text" id="user-code" placeholder="12-DIGIT ROOM CODE" autocomplete="off">
-        <button onclick="connectToServer()">JOIN ROOM</button>
+        <h2>VC LOGIN</h2>
+        <input type="text" id="user-ign" placeholder="MC NAME">
+        <input type="text" id="user-code" placeholder="12-DIGIT CODE">
+        <button onclick="connect()">JOIN ROOM</button>
     </div>
 
     <div id="room-screen" class="container hidden">
-        <h2 id="display-room">ROOM: ---</h2>
-        <div id="player-list">Waiting for players...</div>
-        <div style="font-size: 10px; margin-top: 10px;">
-            <span id="status-light"></span> 
-            <span id="status-text">MIC: INITIALIZING</span>
-        </div>
-        <p style="font-size: 8px; color: #555; margin-top: 15px;">CLICK ANYWHERE TO ENABLE AUDIO</p>
+        <h2 id="room-id">ROOM: ---</h2>
+        <div style="font-size: 10px; margin-bottom: 10px;">NEARBY PLAYERS:</div>
+        <div id="mixer">
+            </div>
+        <div id="status" style="color: red;">MIC: INITIALIZING...</div>
     </div>
 
 <script>
-    const SERVER_URL = "wss://minecraft-bedrock-prox-chat.onrender.com";
-    let socket, myName, audioCtx;
+    const SERVER = "wss://minecraft-bedrock-prox-chat.onrender.com";
+    let ws, myName, audioCtx;
+    let playerVolumes = {}; // Stores { playerName: volumeValue }
 
-    // Initialize Audio Context on first click (Browser Security requirement)
     window.addEventListener('click', () => {
-        if (!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            console.log("Audio Context Started");
-        } else if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        else if (audioCtx.state === 'suspended') audioCtx.resume();
     });
 
-    async function connectToServer() {
+    async function connect() {
         myName = document.getElementById('user-ign').value.trim();
         const code = document.getElementById('user-code').value.trim();
-        
-        if(!myName || !code) return alert("Please enter both Name and Room Code!");
+        if(!myName || !code) return alert("Fill all fields!");
 
-        socket = new WebSocket(SERVER_URL);
-
-        socket.onopen = () => {
-            console.log("Connected to Render!");
-            socket.send(JSON.stringify({ type: 'join', ign: myName, roomId: code }));
-            
+        ws = new WebSocket(SERVER);
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: code }));
             document.getElementById('login-screen').classList.add('hidden');
             document.getElementById('room-screen').classList.remove('hidden');
-            document.getElementById('display-room').innerText = "ROOM: " + code;
+            document.getElementById('room-id').innerText = "ROOM: " + code;
+            startMic();
+        };
+
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
             
-            startMicrophone();
-        };
-
-        socket.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-
-            // Update the UI list of who is in the room
+            // 1. UPDATE PLAYER LIST & VOLUMES
             if (msg.type === 'players') {
-                document.getElementById('player-list').innerHTML = msg.players.map(p => 
-                    `<div>• ${p} ${p === myName ? "(YOU)" : ""}</div>`
-                ).join('');
+                updateMixer(msg.players);
             }
 
-            // Receive audio processed by the server's volume rules
+            // 2. PLAY AUDIO AT SPECIFIED VOLUME
             if (msg.type === 'audio') {
-                playReceivedAudio(msg.data, msg.volume);
+                playAudio(msg.data, msg.volume, msg.from);
+                // Update the visual volume bar for this player
+                updateVolBar(msg.from, msg.volume);
             }
         };
-
-        socket.onerror = () => alert("Could not connect to Render server!");
     }
 
-    async function startMicrophone() {
+    function updateMixer(players) {
+        const mixer = document.getElementById('mixer');
+        mixer.innerHTML = players.map(p => {
+            if (p === myName) return `<div class="player-row"><span>${p} (YOU)</span><span>🎤</span></div>`;
+            return `
+                <div class="player-row">
+                    <span>${p}</span>
+                    <div class="vol-bar-bg">
+                        <div id="vol-fill-${p}" class="vol-bar-fill"></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function updateVolBar(name, vol) {
+        const fill = document.getElementById(`vol-fill-${name}`);
+        if (fill) {
+            fill.style.width = (vol * 100) + "%";
+            // Make it red if they are very far away (low volume)
+            fill.style.background = vol < 0.3 ? "#ffaa00" : "#00ff00";
+        }
+    }
+
+    async function startMic() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const mediaRecorder = new MediaRecorder(stream);
-
-            mediaRecorder.ondataavailable = (event) => {
-                if (socket.readyState === 1 && event.data.size > 0) {
+            const rec = new MediaRecorder(stream);
+            rec.ondataavailable = (e) => {
+                if (ws.readyState === 1 && e.data.size > 0) {
                     const reader = new FileReader();
-                    reader.onload = () => {
-                        const base64Audio = reader.result.split(',')[1];
-                        socket.send(JSON.stringify({ type: 'audio', data: base64Audio }));
-                    };
-                    reader.readAsDataURL(event.data);
+                    reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
+                    reader.readAsDataURL(e.data);
                 }
             };
-
-            mediaRecorder.start(200); // Send chunks every 200ms
-            document.getElementById('status-light').style.background = "#00ff00";
-            document.getElementById('status-text').innerText = "MIC: ACTIVE";
-        } catch (err) {
-            alert("Microphone Error! Ensure you are using HTTPS.");
-            document.getElementById('status-text').innerText = "MIC: ERROR";
-        }
+            rec.start(200);
+            document.getElementById('status').innerText = "MIC: ACTIVE";
+            document.getElementById('status').style.color = "green";
+        } catch (err) { alert("Mic Error! Use HTTPS."); }
     }
 
-    async function playReceivedAudio(base64Data, volumeLevel) {
+    async function playAudio(data, vol, from) {
         if (!audioCtx) return;
-        if (audioCtx.state === 'suspended') await audioCtx.resume();
-
         try {
-            const binaryString = atob(base64Data);
-            const len = binaryString.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-
-            audioCtx.decodeAudioData(bytes.buffer, (buffer) => {
-                const source = audioCtx.createBufferSource();
-                const gainNode = audioCtx.createGain();
-
-                source.buffer = buffer;
-                // 'volumeLevel' is the rule calculated by your Tracker App!
-                gainNode.gain.value = volumeLevel; 
-
-                source.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                source.start(0);
-            });
-        } catch (e) {
-            // Silently ignore minor decode artifacts
-        }
+            const buf = await audioCtx.decodeAudioData(Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer);
+            const src = audioCtx.createBufferSource();
+            const gain = audioCtx.createGain();
+            src.buffer = buf;
+            gain.gain.value = vol; // THE SERVER REGULATES THIS
+            src.connect(gain);
+            gain.connect(audioCtx.destination);
+            src.start(0);
+        } catch (e) {}
     }
 </script>
 </body>
