@@ -1,78 +1,76 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>MC Prox VC</title>
+    <title>PROX VC V4</title>
     <style>
-        body { background: #111; color: #0f0; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
-        .main-box { background: #222; border: 2px solid #0f0; padding: 30px; display: inline-block; border-radius: 10px; }
-        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 10px; margin: 10px; width: 200px; }
-        button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
+        body { background: #0a0a0a; color: #00ff41; font-family: monospace; text-align: center; padding: 50px; }
+        .ui-card { background: #1a1a1a; border: 1px solid #00ff41; padding: 25px; border-radius: 5px; display: inline-block; min-width: 300px; }
+        input { background: #000; border: 1px solid #00ff41; color: #00ff41; padding: 10px; margin: 10px; width: 80%; }
+        button { background: #00ff41; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; width: 88%; }
         .hidden { display: none; }
-        .player-row { border-bottom: 1px solid #333; padding: 10px; text-align: left; }
-        .vol-meter { height: 5px; background: #0f0; width: 0%; transition: width 0.1s; }
+        .player-box { background: #222; margin: 10px 0; padding: 10px; border-left: 3px solid #00ff41; text-align: left; }
+        .bar { height: 4px; background: #00ff41; width: 0%; transition: width 0.15s; }
     </style>
 </head>
 <body>
 
-    <div id="login" class="main-box">
-        <h2>VOICE TERMINAL</h2>
-        <input id="ign" placeholder="MC NAME"> <br>
-        <input id="room" placeholder="12-DIGIT CODE"> <br>
-        <button onclick="start()">INITIALIZE</button>
+    <div id="login" class="ui-card">
+        <h2>TERMINAL_LOGIN</h2>
+        <input id="ign" placeholder="USER_ID (MC NAME)"> <br>
+        <input id="room" placeholder="ROOM_CODE (12 DIGITS)"> <br>
+        <button onclick="start()">INITIATE_LINK</button>
     </div>
 
-    <div id="vc-interface" class="main-box hidden">
-        <h3 id="room-tag">ROOM: ---</h3>
-        <div id="list" style="width: 300px;"></div>
+    <div id="dashboard" class="ui-card hidden">
+        <h3 id="room-id">STATUS: CONNECTED</h3>
+        <div id="p-list"></div>
         <br>
-        <button id="wake-btn" class="hidden" onclick="wakeAudio()" style="background: red; color: white;">CLICK TO FIX AUDIO</button>
+        <button id="fix-audio" class="hidden" onclick="wake()" style="background: #ff0000; color: #fff;">RE-SYNC AUDIO ENGINE</button>
     </div>
 
     <script>
         const WS_URL = window.location.origin.replace(/^http/, 'ws');
-        let ws, myName, audioCtx;
-        let gains = {};
+        let ws, myName, audioCtx, masterGain;
+        let pGains = {}; 
 
         async function start() {
             myName = document.getElementById('ign').value.trim();
             const rId = document.getElementById('room').value.trim();
-            if(!myName || !rId) return alert("Fill fields!");
+            if(!myName || !rId) return alert("FIELDS_EMPTY");
 
             ws = new WebSocket(WS_URL);
             ws.onopen = () => {
                 ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
                 document.getElementById('login').classList.add('hidden');
-                document.getElementById('vc-interface').classList.remove('hidden');
-                document.getElementById('room-tag').innerText = "ROOM: " + rId;
-                initMic();
+                document.getElementById('dashboard').classList.remove('hidden');
+                document.getElementById('room-id').innerText = "ROOM_" + rId;
+                setupMic();
             };
 
             ws.onmessage = async (e) => {
                 const m = JSON.parse(e.data);
-                if(m.type === 'players') {
-                    const list = document.getElementById('list');
-                    list.innerHTML = m.players.map(p => `
-                        <div class="player-row">
-                            ${p} ${p === myName ? '(YOU)' : ''}
-                            <div id="meter-${p}" class="vol-meter"></div>
-                        </div>
-                    `).join('');
-                }
-                if(m.type === 'vol_update') {
-                    m.rules.forEach(r => {
-                        const other = r.a === myName ? r.b : (r.b === myName ? r.a : null);
-                        if(other) {
-                            const bar = document.getElementById(`meter-${other}`);
-                            if(bar) bar.style.width = (r.v * 100) + "%";
-                        }
-                    });
-                }
-                if(m.type === 'audio') playAudio(m.data, m.volume, m.from);
+                if(m.type === 'players') render(m.players);
+                if(m.type === 'vol_update') m.rules.forEach(r => update(r));
+                if(m.type === 'audio') play(m.data, m.volume, m.from);
             };
         }
 
-        async function initMic() {
+        function render(list) {
+            document.getElementById('p-list').innerHTML = list.map(p => `
+                <div class="player-box">
+                    <span>${p} ${p === myName ? '(SELF)' : ''}</span>
+                    ${p !== myName ? `<div id="bar-${p}" class="bar"></div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function update(r) {
+            const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
+            const el = document.getElementById(`bar-${target}`);
+            if(el) el.style.width = (r.v * 100) + "%";
+        }
+
+        async function setupMic() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 const rec = new MediaRecorder(stream);
@@ -84,33 +82,40 @@
                     }
                 };
                 rec.start(250);
-            } catch(e) { alert("Mic Error: Use HTTPS."); }
+            } catch(e) { alert("MIC_ACCESS_DENIED"); }
         }
 
-        function wakeAudio() {
+        function wake() {
             if(audioCtx) audioCtx.resume();
-            document.getElementById('wake-btn').classList.add('hidden');
+            document.getElementById('fix-audio').classList.add('hidden');
         }
 
-        async function playAudio(data, vol, from) {
-            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        async function play(data, vol, from) {
+            if(!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                masterGain = audioCtx.createGain();
+                masterGain.connect(audioCtx.destination);
+            }
             if(audioCtx.state === 'suspended') {
-                document.getElementById('wake-btn').classList.remove('hidden');
+                document.getElementById('fix-audio').classList.remove('hidden');
                 return;
             }
 
-            const buf = await (await fetch(`data:audio/wav;base64,${data}`)).arrayBuffer();
-            audioCtx.decodeAudioData(buf, (b) => {
-                const s = audioCtx.createBufferSource();
-                if(!gains[from]) {
-                    gains[from] = audioCtx.createGain();
-                    gains[from].connect(audioCtx.destination);
-                }
-                s.buffer = b;
-                gains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.05);
-                s.connect(gains[from]);
-                s.start(0);
-            });
+            try {
+                const b = Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer;
+                audioCtx.decodeAudioData(b, (decoded) => {
+                    const s = audioCtx.createBufferSource();
+                    if(!pGains[from]) {
+                        pGains[from] = audioCtx.createGain();
+                        pGains[from].connect(masterGain);
+                    }
+                    s.buffer = decoded;
+                    // FIX: Smoothing filter (0.1s ramp) keeps audio from cutting
+                    pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+                    s.connect(pGains[from]);
+                    s.start(0);
+                });
+            } catch(e) {}
         }
     </script>
 </body>

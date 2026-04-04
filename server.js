@@ -4,19 +4,15 @@ const fs = require('fs');
 const path = require('path');
 
 const server = http.createServer((req, res) => {
-    // This creates an absolute path to the index.html file
     const filePath = path.resolve(__dirname, 'index.html');
-
-    fs.access(filePath, fs.constants.F_OK, (err) => {
+    fs.readFile(filePath, (err, data) => {
         if (err) {
-            console.error("CRITICAL: index.html is missing at " + filePath);
-            res.writeHead(404, { 'Content-Type': 'text/plain' });
-            res.end("Server Error: index.html not found. Check GitHub folders.");
+            res.writeHead(404);
+            res.end("index.html not found");
             return;
         }
-
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        fs.createReadStream(filePath).pipe(res);
+        res.end(data);
     });
 });
 
@@ -25,45 +21,42 @@ const rooms = new Map();
 const syncs = new Map(); 
 
 wss.on('connection', (ws) => {
-    let currRoom = null, currName = null;
+    let myRoom = null, myName = null;
 
-    ws.on('message', (data) => {
+    ws.on('message', (raw) => {
         try {
-            const m = JSON.parse(data);
+            const m = JSON.parse(raw);
             if (m.type === 'sync_rules') {
                 syncs.set(m.roomId, m.rules);
                 rooms.get(m.roomId)?.forEach(c => c.send(JSON.stringify({ type: 'vol_update', rules: m.rules })));
             }
             if (m.type === 'join') {
-                currRoom = m.roomId; currName = m.ign;
-                if (!rooms.has(currRoom)) rooms.set(currRoom, new Map());
-                rooms.get(currRoom).set(currName, ws);
-                const names = Array.from(rooms.get(currRoom).keys());
-                rooms.get(currRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
+                myRoom = m.roomId; myName = m.ign;
+                if (!rooms.has(myRoom)) rooms.set(myRoom, new Map());
+                rooms.get(myRoom).set(myName, ws);
+                const names = Array.from(rooms.get(myRoom).keys());
+                rooms.get(myRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
             }
-            if (m.type === 'audio' && currRoom) {
-                const rules = syncs.get(currRoom) || [];
-                rooms.get(currRoom).forEach((client, name) => {
-                    if (name === currName) return;
-                    const rule = rules.find(r => (r.a === currName && r.b === name) || (r.a === name && r.b === currName));
+            if (m.type === 'audio' && myRoom) {
+                const rules = syncs.get(myRoom) || [];
+                rooms.get(myRoom).forEach((client, name) => {
+                    if (name === myName) return;
+                    const rule = rules.find(r => (r.a === myName && r.b === name) || (r.a === name && r.b === currName));
                     if (rule && rule.v > 0.01) {
-                        client.send(JSON.stringify({ type: 'audio', data: m.data, volume: rule.v, from: currName }));
+                        client.send(JSON.stringify({ type: 'audio', data: m.data, volume: rule.v, from: myName }));
                     }
                 });
             }
-        } catch (e) { console.log("Data Error:", e); }
+        } catch (e) {}
     });
 
     ws.on('close', () => {
-        if (currRoom && rooms.get(currRoom)) {
-            rooms.get(currRoom).delete(currName);
-            const names = Array.from(rooms.get(currRoom).keys());
-            rooms.get(currRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
+        if (myRoom && rooms.has(myRoom)) {
+            rooms.get(myRoom).delete(myName);
+            const names = Array.from(rooms.get(myRoom).keys());
+            rooms.get(myRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
         }
     });
 });
 
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-    console.log(`Server live on port ${PORT}`);
-});
+server.listen(process.env.PORT || 10000);
