@@ -1,135 +1,149 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>PROXIMITY_ULTIMATE</title>
+    <meta charset="UTF-8">
+    <title>PROXIMITY_V5_STABLE</title>
     <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        .box { border: 1px solid #0f0; padding: 20px; max-width: 400px; margin: auto; background: #050505; }
-        .log { background: #111; color: #888; font-size: 10px; height: 100px; overflow-y: scroll; text-align: left; padding: 5px; margin-top: 10px; border: 1px solid #222; }
-        .player { border: 1px solid #333; padding: 10px; margin: 5px 0; text-align: left; }
-        .meter { height: 4px; background: #0f0; width: 0%; }
-        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 8px; margin: 5px; width: 80%; }
-        button { background: #0f0; color: #000; border: none; padding: 10px; width: 85%; font-weight: bold; cursor: pointer; }
+        body { background: #000; color: #0f0; font-family: 'Courier New', monospace; text-align: center; padding: 20px; }
+        .container { border: 1px solid #0f0; background: #080808; padding: 30px; display: inline-block; min-width: 350px; border-radius: 8px; }
+        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 10px; margin: 5px; width: 80%; }
+        button { background: #0f0; color: #000; border: none; padding: 12px; font-weight: bold; cursor: pointer; width: 88%; margin-top: 10px; }
         .hidden { display: none; }
+        .player-card { border: 1px solid #222; padding: 15px; margin: 10px 0; text-align: left; position: relative; }
+        .vol-bar { height: 4px; background: #0f0; width: 0%; transition: width 0.1s; margin-top: 8px; }
+        .log-window { background: #000; border: 1px solid #333; color: #666; font-size: 11px; height: 120px; overflow-y: auto; text-align: left; padding: 10px; margin-top: 20px; }
     </style>
 </head>
 <body>
 
-<div id="login" class="box">
-    <h2>SYSTEM_LOGIN</h2>
-    <input id="ign" placeholder="MINECRAFT_NAME">
-    <input id="room" placeholder="TRACKER_CODE">
-    <button onclick="init()">CONNECT_TO_NODE</button>
-</div>
+    <div id="login" class="container">
+        <h2>VOICE_LINK_ESTABLISHED</h2>
+        <input id="ign" placeholder="MC_USERNAME"> <br>
+        <input id="room" placeholder="TRACKER_CODE"> <br>
+        <button onclick="connect()">INITIALIZE_CONNECTION</button>
+    </div>
 
-<div id="app" class="box hidden">
-    <h3>ACTIVE_CHANNEL: <span id="ch">--</span></h3>
-    <div id="p-list"></div>
-    <div id="log" class="log">Initializing diagnostic logs...</div>
-    <br>
-    <button id="fix" class="hidden" onclick="forceWake()" style="background: red; color: white;">! AUDIO_BLOCKED: CLICK TO FIX !</button>
-</div>
+    <div id="app" class="container hidden">
+        <h3 id="room-info">CHANNEL: --</h3>
+        <div id="p-list"></div>
+        <div id="logs" class="log-window">System Booting...</div>
+        <br>
+        <button id="fix-btn" class="hidden" onclick="forceWake()" style="background: #f00; color: #fff;">! RESTORE_AUDIO_OUTPUT !</button>
+    </div>
 
-<script>
-    const WS_URL = window.location.origin.replace(/^http/, 'ws');
-    let ws, myName, audioCtx, masterGain;
-    let pGains = {};
+    <script>
+        const WS_URL = window.location.origin.replace(/^http/, 'ws');
+        let ws, myName, audioCtx, masterGain;
+        let pGains = {}; 
 
-    function log(msg) {
-        const l = document.getElementById('log');
-        l.innerHTML += `> ${msg}<br>`;
-        l.scrollTop = l.scrollHeight;
-    }
+        function log(msg) {
+            const l = document.getElementById('logs');
+            l.innerHTML += `> ${msg}<br>`;
+            l.scrollTop = l.scrollHeight;
+        }
 
-    async function init() {
-        myName = document.getElementById('ign').value.trim();
-        const rId = document.getElementById('room').value.trim();
-        if(!myName || !rId) return;
+        async function connect() {
+            myName = document.getElementById('ign').value.trim();
+            const rId = document.getElementById('room').value.trim();
+            if(!myName || !rId) return alert("Fill all fields.");
 
-        ws = new WebSocket(WS_URL);
-        ws.onopen = () => {
-            log("Connected to Render Server.");
-            ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
-            document.getElementById('login').classList.add('hidden');
-            document.getElementById('app').classList.remove('hidden');
-            document.getElementById('ch').innerText = rId;
-            startMic();
-        };
-
-        ws.onmessage = async (e) => {
-            const m = JSON.parse(e.data);
-            if(m.type === 'players') render(m.players);
-            if(m.type === 'vol_update') m.rules.forEach(r => update(r));
-            if(m.type === 'audio') play(m.data, m.volume, m.from);
-        };
-    }
-
-    function render(list) {
-        document.getElementById('p-list').innerHTML = list.map(p => `
-            <div class="player">
-                ${p} ${p === myName ? '(YOU)' : ''}
-                ${p !== myName ? `<div id="bar-${p}" class="meter"></div>` : ''}
-            </div>
-        `).join('');
-    }
-
-    function update(r) {
-        const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
-        const el = document.getElementById(`bar-${target}`);
-        if(el) el.style.width = (r.v * 100) + "%";
-    }
-
-    async function startMic() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            log("Microphone Access Granted.");
-            const rec = new MediaRecorder(stream);
-            rec.ondataavailable = (e) => {
-                if(ws.readyState === 1 && e.data.size > 0) {
-                    const reader = new FileReader();
-                    reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
-                    reader.readAsDataURL(e.data);
-                }
+            ws = new WebSocket(WS_URL);
+            ws.onopen = () => {
+                log("Socket Connected.");
+                ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
+                document.getElementById('login').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+                document.getElementById('room-info').innerText = "ROOM_" + rId;
+                startMicLoop();
             };
-            rec.start(250); // Small chunks = low lag
-        } catch(e) { log("ERR: Mic Blocked! Check HTTPS."); }
-    }
 
-    function forceWake() {
-        if(audioCtx) audioCtx.resume();
-        document.getElementById('fix').classList.add('hidden');
-        log("AudioContext manually resumed.");
-    }
-
-    async function play(data, vol, from) {
-        if(!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            masterGain = audioCtx.createGain();
-            masterGain.connect(audioCtx.destination);
-            log("Audio Output Engine Created.");
-        }
-        
-        if(audioCtx.state === 'suspended') {
-            document.getElementById('fix').classList.remove('hidden');
-            return;
+            ws.onmessage = async (e) => {
+                const m = JSON.parse(e.data);
+                if(m.type === 'players') render(m.players);
+                if(m.type === 'vol_update') m.rules.forEach(r => updateUI(r));
+                if(m.type === 'audio') playAudio(m.data, m.volume, m.from);
+            };
         }
 
-        try {
-            const b = Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer;
-            audioCtx.decodeAudioData(b, (decoded) => {
-                const s = audioCtx.createBufferSource();
-                if(!pGains[from]) {
-                    pGains[from] = audioCtx.createGain();
-                    pGains[from].connect(masterGain);
-                }
-                s.buffer = decoded;
-                // Aggressive volume smoothing
-                pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
-                s.connect(pGains[from]);
-                s.start(0);
-            }, (e) => log("Decode Error: Packet Corrupt"));
-        } catch(e) { log("Playback Error."); }
-    }
-</script>
+        function render(list) {
+            document.getElementById('p-list').innerHTML = list.map(p => `
+                <div class="player-card">
+                    <strong>${p}</strong> ${p === myName ? '(LOCAL)' : ''}
+                    ${p !== myName ? `<div id="bar-${p}" class="vol-bar"></div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function updateUI(r) {
+            const target = (r.a.toLowerCase() === myName.toLowerCase()) ? r.b : (r.b.toLowerCase() === myName.toLowerCase() ? r.a : null);
+            const el = document.getElementById(`bar-${target}`);
+            if(el) el.style.width = (r.v * 100) + "%";
+        }
+
+        async function startMicLoop() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                log("Mic Active.");
+                
+                // This interval creates 500ms STANDALONE audio files to prevent corruption
+                setInterval(async () => {
+                    if (ws && ws.readyState === 1) {
+                        const rec = new MediaRecorder(stream);
+                        const chunks = [];
+                        rec.ondataavailable = (e) => chunks.push(e.data);
+                        rec.onstop = async () => {
+                            const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+                            const reader = new FileReader();
+                            reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
+                            reader.readAsDataURL(blob);
+                        };
+                        rec.start();
+                        setTimeout(() => rec.stop(), 500);
+                    }
+                }, 600);
+            } catch(e) { log("ERR: Mic Denied. Check HTTPS."); }
+        }
+
+        function forceWake() {
+            if(audioCtx) audioCtx.resume();
+            document.getElementById('fix-btn').classList.add('hidden');
+            log("Audio Output Resumed.");
+        }
+
+        async function playAudio(data, vol, from) {
+            if(!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                masterGain = audioCtx.createGain();
+                masterGain.connect(audioCtx.destination);
+                log("Audio Engine Ready.");
+            }
+            if(audioCtx.state === 'suspended') {
+                document.getElementById('fix-btn').classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const binary = atob(data);
+                const array = new Uint8Array(binary.length);
+                for(let i=0; i<binary.length; i++) array[i] = binary.charCodeAt(i);
+                
+                audioCtx.decodeAudioData(array.buffer, (buffer) => {
+                    const source = audioCtx.createBufferSource();
+                    if(!pGains[from]) {
+                        pGains[from] = audioCtx.createGain();
+                        pGains[from].connect(masterGain);
+                    }
+                    source.buffer = buffer;
+                    // Filter: Smooths the volume over 0.1s to stop cut-offs
+                    pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+                    source.connect(pGains[from]);
+                    source.start(0);
+                }, (e) => {
+                    // This block will catch any remaining network jitter
+                    console.warn("Jitter Skip");
+                });
+            } catch(e) {}
+        }
+    </script>
 </body>
 </html>
