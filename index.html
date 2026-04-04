@@ -1,55 +1,117 @@
-const { WebSocketServer } = require('ws');
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MC Prox VC</title>
+    <style>
+        body { background: #111; color: #0f0; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
+        .main-box { background: #222; border: 2px solid #0f0; padding: 30px; display: inline-block; border-radius: 10px; }
+        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 10px; margin: 10px; width: 200px; }
+        button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
+        .hidden { display: none; }
+        .player-row { border-bottom: 1px solid #333; padding: 10px; text-align: left; }
+        .vol-meter { height: 5px; background: #0f0; width: 0%; transition: width 0.1s; }
+    </style>
+</head>
+<body>
 
-const server = http.createServer((req, res) => {
-    const file = path.join(process.cwd(), 'index.html');
-    if (fs.existsSync(file)) {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        fs.createReadStream(file).pipe(res);
-    } else {
-        res.writeHead(404).end("index.html missing");
-    }
-});
+    <div id="login" class="main-box">
+        <h2>VOICE TERMINAL</h2>
+        <input id="ign" placeholder="MC NAME"> <br>
+        <input id="room" placeholder="12-DIGIT CODE"> <br>
+        <button onclick="start()">INITIALIZE</button>
+    </div>
 
-const wss = new WebSocketServer({ server });
-const rooms = new Map(); 
-const syncs = new Map(); 
+    <div id="vc-interface" class="main-box hidden">
+        <h3 id="room-tag">ROOM: ---</h3>
+        <div id="list" style="width: 300px;"></div>
+        <br>
+        <button id="wake-btn" class="hidden" onclick="wakeAudio()" style="background: red; color: white;">CLICK TO FIX AUDIO</button>
+    </div>
 
-wss.on('connection', (ws) => {
-    let currRoom = null, currName = null;
+    <script>
+        const WS_URL = window.location.origin.replace(/^http/, 'ws');
+        let ws, myName, audioCtx;
+        let gains = {};
 
-    ws.on('message', (data) => {
-        try {
-            const m = JSON.parse(data);
-            if (m.type === 'sync_rules') {
-                syncs.set(m.roomId, m.rules);
-                rooms.get(m.roomId)?.forEach(c => c.send(JSON.stringify({ type: 'vol_update', rules: m.rules })));
-            }
-            if (m.type === 'join') {
-                currRoom = m.roomId; currName = m.ign;
-                if (!rooms.has(currRoom)) rooms.set(currRoom, new Map());
-                rooms.get(currRoom).set(currName, ws);
-                const names = Array.from(rooms.get(currRoom).keys());
-                rooms.get(currRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
-            }
-            if (m.type === 'audio' && currRoom) {
-                const rules = syncs.get(currRoom) || [];
-                rooms.get(currRoom).forEach((client, name) => {
-                    if (name === currName) return;
-                    const rule = rules.find(r => (r.a === currName && r.b === name) || (r.a === name && r.b === currName));
-                    if (rule && rule.v > 0.01) {
-                        client.send(JSON.stringify({ type: 'audio', data: m.data, volume: rule.v, from: currName }));
+        async function start() {
+            myName = document.getElementById('ign').value.trim();
+            const rId = document.getElementById('room').value.trim();
+            if(!myName || !rId) return alert("Fill fields!");
+
+            ws = new WebSocket(WS_URL);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
+                document.getElementById('login').classList.add('hidden');
+                document.getElementById('vc-interface').classList.remove('hidden');
+                document.getElementById('room-tag').innerText = "ROOM: " + rId;
+                initMic();
+            };
+
+            ws.onmessage = async (e) => {
+                const m = JSON.parse(e.data);
+                if(m.type === 'players') {
+                    const list = document.getElementById('list');
+                    list.innerHTML = m.players.map(p => `
+                        <div class="player-row">
+                            ${p} ${p === myName ? '(YOU)' : ''}
+                            <div id="meter-${p}" class="vol-meter"></div>
+                        </div>
+                    `).join('');
+                }
+                if(m.type === 'vol_update') {
+                    m.rules.forEach(r => {
+                        const other = r.a === myName ? r.b : (r.b === myName ? r.a : null);
+                        if(other) {
+                            const bar = document.getElementById(`meter-${other}`);
+                            if(bar) bar.style.width = (r.v * 100) + "%";
+                        }
+                    });
+                }
+                if(m.type === 'audio') playAudio(m.data, m.volume, m.from);
+            };
+        }
+
+        async function initMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const rec = new MediaRecorder(stream);
+                rec.ondataavailable = (e) => {
+                    if(ws.readyState === 1 && e.data.size > 0) {
+                        const reader = new FileReader();
+                        reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
+                        reader.readAsDataURL(e.data);
                     }
-                });
+                };
+                rec.start(250);
+            } catch(e) { alert("Mic Error: Use HTTPS."); }
+        }
+
+        function wakeAudio() {
+            if(audioCtx) audioCtx.resume();
+            document.getElementById('wake-btn').classList.add('hidden');
+        }
+
+        async function playAudio(data, vol, from) {
+            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if(audioCtx.state === 'suspended') {
+                document.getElementById('wake-btn').classList.remove('hidden');
+                return;
             }
-        } catch (e) {}
-    });
 
-    ws.on('close', () => {
-        rooms.get(currRoom)?.delete(currName);
-    });
-});
-
-server.listen(process.env.PORT || 10000);
+            const buf = await (await fetch(`data:audio/wav;base64,${data}`)).arrayBuffer();
+            audioCtx.decodeAudioData(buf, (b) => {
+                const s = audioCtx.createBufferSource();
+                if(!gains[from]) {
+                    gains[from] = audioCtx.createGain();
+                    gains[from].connect(audioCtx.destination);
+                }
+                s.buffer = b;
+                gains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.05);
+                s.connect(gains[from]);
+                s.start(0);
+            });
+        }
+    </script>
+</body>
+</html>
