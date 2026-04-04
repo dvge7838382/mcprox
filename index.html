@@ -1,138 +1,96 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MC Proximity VC</title>
+    <title>MC Proximity</title>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
-        body { background: #333; font-family: 'Press Start 2P', cursive; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { background: #c6c6c6; border: 6px solid #000; padding: 30px; width: 500px; color: #000; text-align: center; box-shadow: 10px 10px 0px rgba(0,0,0,0.3); }
-        h2 { font-size: 16px; margin-bottom: 20px; }
-        input { width: 100%; padding: 12px; margin: 10px 0; border: 4px solid #000; font-family: 'Press Start 2P'; font-size: 10px; outline: none; }
-        button { width: 100%; background: #5a5a5a; color: #fff; padding: 15px; border: 4px solid #000; cursor: pointer; font-family: 'Press Start 2P'; font-size: 12px; margin-top: 10px; }
-        .hidden { display: none !important; }
-        
-        /* VOLUME MIXER UI */
-        #mixer { background: #a0a0a0; border: 3px solid #000; padding: 15px; margin: 15px 0; text-align: left; }
-        .player-row { display: flex; justify-content: space-between; align-items: center; background: #eee; border: 2px solid #000; margin: 5px 0; padding: 8px; font-size: 10px; }
-        .vol-bar-bg { width: 100px; height: 10px; background: #555; border: 1px solid #000; position: relative; }
-        .vol-bar-fill { height: 100%; background: #00ff00; width: 0%; transition: width 0.3s; }
-        
-        #status { font-size: 10px; margin-top: 10px; font-weight: bold; }
+        body { background: #222; font-family: 'Press Start 2P', cursive; color: #fff; display: flex; flex-direction: column; align-items: center; padding-top: 50px; }
+        .box { background: #c6c6c6; border: 4px solid #000; padding: 20px; width: 400px; color: #000; text-align: center; }
+        input { width: 90%; padding: 10px; margin: 10px 0; border: 3px solid #000; font-family: 'Press Start 2P'; font-size: 10px; }
+        button { width: 95%; background: #555; color: #fff; padding: 10px; border: 3px solid #000; cursor: pointer; font-family: 'Press Start 2P'; }
+        .player-card { background: #999; border: 2px solid #000; margin: 5px 0; padding: 10px; text-align: left; }
+        .bar-bg { width: 100%; height: 10px; background: #444; border: 1px solid #000; margin-top: 5px; }
+        .bar-fill { height: 100%; background: #0f0; width: 0%; transition: 0.2s; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
-
-    <div id="login-screen" class="container">
-        <h2>VC LOGIN</h2>
-        <input type="text" id="user-ign" placeholder="MC NAME">
-        <input type="text" id="user-code" placeholder="12-DIGIT CODE">
-        <button onclick="connect()">JOIN ROOM</button>
+    <div id="login" class="box">
+        <h3>VC LOGIN</h3>
+        <input id="ign" placeholder="MC NAME">
+        <input id="room" placeholder="ROOM CODE">
+        <button onclick="start()">CONNECT</button>
     </div>
 
-    <div id="room-screen" class="container hidden">
-        <h2 id="room-id">ROOM: ---</h2>
-        <div style="font-size: 10px; margin-bottom: 10px;">NEARBY PLAYERS:</div>
-        <div id="mixer">
-            </div>
-        <div id="status" style="color: red;">MIC: INITIALIZING...</div>
+    <div id="ui" class="box hidden">
+        <h4 id="rm-id">ROOM: ---</h4>
+        <div id="mixer"></div>
+        <p id="mic-status" style="color:red; font-size:10px;">MIC: OFF</p>
     </div>
 
 <script>
-    const SERVER = "wss://minecraft-bedrock-prox-chat.onrender.com";
-    let ws, myName, audioCtx;
-    let playerVolumes = {}; // Stores { playerName: volumeValue }
+    const URL = "wss://your-app-name.onrender.com"; // CHANGE THIS
+    let ws, myName, ctx;
 
-    window.addEventListener('click', () => {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        else if (audioCtx.state === 'suspended') audioCtx.resume();
-    });
-
-    async function connect() {
-        myName = document.getElementById('user-ign').value.trim();
-        const code = document.getElementById('user-code').value.trim();
-        if(!myName || !code) return alert("Fill all fields!");
-
-        ws = new WebSocket(SERVER);
+    async function start() {
+        myName = document.getElementById('ign').value.trim();
+        const code = document.getElementById('room').value.trim();
+        ws = new WebSocket(URL);
         ws.onopen = () => {
             ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: code }));
-            document.getElementById('login-screen').classList.add('hidden');
-            document.getElementById('room-screen').classList.remove('hidden');
-            document.getElementById('room-id').innerText = "ROOM: " + code;
-            startMic();
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('ui').classList.remove('hidden');
+            document.getElementById('rm-id').innerText = "ROOM: " + code;
+            initMic();
         };
-
         ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            
-            // 1. UPDATE PLAYER LIST & VOLUMES
-            if (msg.type === 'players') {
-                updateMixer(msg.players);
-            }
-
-            // 2. PLAY AUDIO AT SPECIFIED VOLUME
-            if (msg.type === 'audio') {
-                playAudio(msg.data, msg.volume, msg.from);
-                // Update the visual volume bar for this player
-                updateVolBar(msg.from, msg.volume);
-            }
+            const m = JSON.parse(e.data);
+            if(m.type === 'players') updateMixer(m.players);
+            if(m.type === 'audio') play(m.data, m.volume, m.from);
         };
     }
 
-    function updateMixer(players) {
-        const mixer = document.getElementById('mixer');
-        mixer.innerHTML = players.map(p => {
-            if (p === myName) return `<div class="player-row"><span>${p} (YOU)</span><span>🎤</span></div>`;
-            return `
-                <div class="player-row">
-                    <span>${p}</span>
-                    <div class="vol-bar-bg">
-                        <div id="vol-fill-${p}" class="vol-bar-fill"></div>
-                    </div>
-                </div>
-            `;
-        }).join('');
+    function updateMixer(list) {
+        document.getElementById('mixer').innerHTML = list.map(p => `
+            <div class="player-card">
+                <div>${p} ${p===myName?'(YOU)':''}</div>
+                ${p!==myName?`<div class="bar-bg"><div id="fill-${p}" class="bar-fill"></div></div><div id="txt-${p}" style="font-size:8px">VOL: 0%</div>`:''}
+            </div>`).join('');
     }
 
-    function updateVolBar(name, vol) {
-        const fill = document.getElementById(`vol-fill-${name}`);
-        if (fill) {
-            fill.style.width = (vol * 100) + "%";
-            // Make it red if they are very far away (low volume)
-            fill.style.background = vol < 0.3 ? "#ffaa00" : "#00ff00";
+    async function initMic() {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rec = new MediaRecorder(stream);
+        rec.ondataavailable = (e) => {
+            if(ws.readyState === 1) {
+                const fr = new FileReader();
+                fr.onload = () => ws.send(JSON.stringify({ type: 'audio', data: fr.result.split(',')[1] }));
+                fr.readAsDataURL(e.data);
+            }
+        };
+        rec.start(200);
+        document.getElementById('mic-status').innerText = "MIC: ACTIVE";
+        document.getElementById('mic-status').style.color = "green";
+    }
+
+    async function play(data, vol, from) {
+        if(!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if(ctx.state === 'suspended') await ctx.resume();
+        const buf = await ctx.decodeAudioData(Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer);
+        const src = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        src.buffer = buf;
+        gain.gain.value = vol;
+        src.connect(gain); gain.connect(ctx.destination);
+        src.start(0);
+        
+        // Update the visual bar
+        const fill = document.getElementById(`fill-${from}`);
+        const txt = document.getElementById(`txt-${from}`);
+        if(fill) {
+            fill.style.width = (vol*100) + "%";
+            txt.innerText = "VOL: " + Math.round(vol*100) + "%";
         }
-    }
-
-    async function startMic() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const rec = new MediaRecorder(stream);
-            rec.ondataavailable = (e) => {
-                if (ws.readyState === 1 && e.data.size > 0) {
-                    const reader = new FileReader();
-                    reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
-                    reader.readAsDataURL(e.data);
-                }
-            };
-            rec.start(200);
-            document.getElementById('status').innerText = "MIC: ACTIVE";
-            document.getElementById('status').style.color = "green";
-        } catch (err) { alert("Mic Error! Use HTTPS."); }
-    }
-
-    async function playAudio(data, vol, from) {
-        if (!audioCtx) return;
-        try {
-            const buf = await audioCtx.decodeAudioData(Uint8Array.from(atob(data), c => c.charCodeAt(0)).buffer);
-            const src = audioCtx.createBufferSource();
-            const gain = audioCtx.createGain();
-            src.buffer = buf;
-            gain.gain.value = vol; // THE SERVER REGULATES THIS
-            src.connect(gain);
-            gain.connect(audioCtx.destination);
-            src.start(0);
-        } catch (e) {}
     }
 </script>
 </body>
