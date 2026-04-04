@@ -1,159 +1,107 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minecraft Proximity VC</title>
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <title>MC Proximity</title>
     <style>
-        body { background: #1a1a1a; font-family: 'Press Start 2P', cursive; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .container { background: #bdbdbd; border: 4px solid #000; padding: 25px; width: 420px; color: #000; text-align: center; box-shadow: 8px 8px 0px rgba(0,0,0,0.5); }
-        h2 { font-size: 14px; margin-bottom: 20px; text-transform: uppercase; }
-        input { width: 90%; padding: 12px; margin: 8px 0; border: 3px solid #000; font-family: 'Press Start 2P'; font-size: 10px; outline: none; background: #eee; }
-        button { width: 98%; background: #5a5a5a; color: #fff; padding: 12px; border: 3px solid #000; cursor: pointer; font-family: 'Press Start 2P'; font-size: 10px; margin-top: 10px; transition: 0.1s; }
-        button:active { transform: translate(2px, 2px); }
-        .hidden { display: none !important; }
-        
-        /* MIXER STYLES */
-        #mixer { background: #9e9e9e; border: 3px solid #000; padding: 10px; margin-top: 15px; text-align: left; max-height: 250px; overflow-y: auto; }
-        .player-row { background: #dfdfdf; border: 2px solid #000; margin: 5px 0; padding: 8px; }
-        .player-meta { display: flex; justify-content: space-between; font-size: 8px; margin-bottom: 5px; }
-        .vol-track { width: 100%; height: 12px; background: #444; border: 1px solid #000; position: relative; }
-        .vol-fill { height: 100%; background: #00ff00; width: 0%; transition: width 0.15s ease; }
-        #status-bar { font-size: 8px; margin-top: 15px; color: #444; }
+        body { background: #222; color: white; font-family: sans-serif; text-align: center; padding: 50px; }
+        .box { background: #333; padding: 20px; border-radius: 10px; display: inline-block; width: 300px; }
+        input { width: 80%; padding: 10px; margin: 10px; }
+        button { padding: 10px 20px; cursor: pointer; background: #00AA00; color: white; border: none; }
+        .hidden { display: none; }
+        .player { background: #444; margin: 10px; padding: 10px; border-left: 5px solid #00AA00; text-align: left; }
+        .bar-bg { background: #111; height: 10px; width: 100%; margin-top: 5px; }
+        .bar-fill { background: #00FF00; height: 100%; width: 0%; transition: 0.2s; }
     </style>
 </head>
 <body>
 
-    <div id="login-screen" class="container">
-        <h2>VC LOGIN</h2>
-        <input type="text" id="user-ign" placeholder="MC USERNAME" autocomplete="off">
-        <input type="text" id="user-code" placeholder="12-DIGIT CODE" autocomplete="off">
-        <button id="btn-connect" onclick="connect()">JOIN ROOM</button>
+    <div id="login" class="box">
+        <h3>Proximity VC</h3>
+        <input id="name" placeholder="Minecraft Name">
+        <input id="code" placeholder="12-Digit Room Code">
+        <button onclick="join()">CONNECT</button>
     </div>
 
-    <div id="room-screen" class="container hidden">
-        <h2 id="display-room">ROOM: ---</h2>
-        <div id="mixer">
-            <p style="font-size: 8px; text-align: center;">Waiting for Tracker data...</p>
-        </div>
-        <div id="status-bar">
-            STATUS: <span id="mic-label" style="color:red">OFFLINE</span>
-        </div>
-        <button id="btn-audio-fix" class="hidden" onclick="resumeAudio()" style="background:#ff9800">CLICK TO ENABLE AUDIO</button>
+    <div id="ui" class="hidden">
+        <h4 id="room-display">Room: ---</h4>
+        <div id="player-list"></div>
+        <button id="audio-btn" class="hidden" onclick="unlockAudio()" style="background: orange;">ENABLE AUDIO</button>
     </div>
 
-<script>
-    // AUTO-DETECT URL (Replace with your hardcoded wss:// link if testing locally)
-    const RENDER_URL = window.location.origin.replace(/^http/, 'ws');
-    
-    let socket, myName, audioCtx;
+    <script>
+        const URL = window.location.origin.replace(/^http/, 'ws');
+        let ws, myName, audioCtx;
 
-    async function connect() {
-        myName = document.getElementById('user-ign').value.trim();
-        const code = document.getElementById('user-code').value.trim();
+        async function join() {
+            myName = document.getElementById('name').value.trim();
+            const roomId = document.getElementById('code').value.trim();
+            if(!myName || !roomId) return alert("Fill everything!");
 
-        if (!myName || !code) return alert("Please enter Name and Code!");
+            ws = new WebSocket(URL);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: roomId }));
+                document.getElementById('login').classList.add('hidden');
+                document.getElementById('ui').classList.remove('hidden');
+                document.getElementById('room-display').innerText = "Room: " + roomId;
+                setupMic();
+            };
 
-        socket = new WebSocket(RENDER_URL);
+            ws.onmessage = async (e) => {
+                const m = JSON.parse(e.data);
+                if(m.type === 'players') renderPlayers(m.players);
+                if(m.type === 'vol_update') m.rules.forEach(r => updateVol(r));
+                if(m.type === 'audio') playAudio(m.data, m.volume, m.from);
+            };
+        }
 
-        socket.onopen = () => {
-            socket.send(JSON.stringify({ type: 'join', ign: myName, roomId: code }));
-            document.getElementById('login-screen').classList.add('hidden');
-            document.getElementById('room-screen').classList.remove('hidden');
-            document.getElementById('display-room').innerText = "ROOM: " + code;
-            startMic();
-        };
-
-        socket.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'players') updateUI(msg.players);
-            if (msg.type === 'audio') handleIncomingAudio(msg.data, msg.volume, msg.from);
-        };
-
-        socket.onerror = () => alert("Connection Failed! Is your server awake?");
-    }
-
-    function updateUI(players) {
-        const mixer = document.getElementById('mixer');
-        mixer.innerHTML = players.map(p => `
-            <div class="player-row">
-                <div class="player-meta">
-                    <span>${p} ${p === myName ? '(YOU)' : ''}</span>
-                    <span id="pct-${p}">${p === myName ? 'MC' : '0%'}</span>
+        function renderPlayers(list) {
+            const container = document.getElementById('player-list');
+            container.innerHTML = list.map(p => `
+                <div class="player">
+                    <span>${p}</span>
+                    ${p !== myName ? `<div class="bar-bg"><div id="bar-${p}" class="bar-fill"></div></div>` : '(You)'}
                 </div>
-                ${p !== myName ? `
-                    <div class="vol-track"><div id="bar-${p}" class="vol-fill"></div></div>
-                ` : ''}
-            </div>
-        `).join('');
-    }
+            `).join('');
+        }
 
-    async function startMic() {
-        try {
+        function updateVol(r) {
+            const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
+            const el = document.getElementById(`bar-${target}`);
+            if(el) el.style.width = (r.v * 100) + "%";
+        }
+
+        async function setupMic() {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const recorder = new MediaRecorder(stream);
-            
-            recorder.ondataavailable = (e) => {
-                if (socket.readyState === 1 && e.data.size > 0) {
+            const rec = new MediaRecorder(stream);
+            rec.ondataavailable = (e) => {
+                if(ws.readyState === 1 && e.data.size > 0) {
                     const reader = new FileReader();
-                    reader.onload = () => {
-                        const base64 = reader.result.split(',')[1];
-                        socket.send(JSON.stringify({ type: 'audio', data: base64 }));
-                    };
+                    reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
                     reader.readAsDataURL(e.data);
                 }
             };
-            recorder.start(250); // Balanced latency
-            document.getElementById('mic-label').innerText = "MIC ACTIVE";
-            document.getElementById('mic-label').style.color = "green";
-        } catch (err) {
-            alert("Mic Error! Check HTTPS settings.");
-        }
-    }
-
-    function resumeAudio() {
-        if (audioCtx) {
-            audioCtx.resume();
-            document.getElementById('btn-audio-fix').classList.add('hidden');
-        }
-    }
-
-    async function handleIncomingAudio(data, vol, from) {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // Show fix button if browser blocks audio
-        if (audioCtx.state === 'suspended') {
-            document.getElementById('btn-audio-fix').classList.remove('hidden');
-            return;
+            rec.start(250);
         }
 
-        try {
-            const binary = atob(data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        function unlockAudio() {
+            if(audioCtx) audioCtx.resume();
+            document.getElementById('audio-btn').classList.add('hidden');
+        }
 
-            audioCtx.decodeAudioData(bytes.buffer, (buffer) => {
+        async function playAudio(data, vol, from) {
+            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if(audioCtx.state === 'suspended') return document.getElementById('audio-btn').classList.remove('hidden');
+
+            const buf = await (await fetch(`data:audio/wav;base64,${data}`)).arrayBuffer();
+            audioCtx.decodeAudioData(buf, (b) => {
                 const src = audioCtx.createBufferSource();
-                const gain = audioCtx.createGain();
-                src.buffer = buffer;
-                gain.gain.value = vol; 
-                src.connect(gain);
-                gain.connect(audioCtx.destination);
+                const g = audioCtx.createGain();
+                src.buffer = b;
+                g.gain.value = vol;
+                src.connect(g).connect(audioCtx.destination);
                 src.start(0);
-
-                // Update Visuals
-                const bar = document.getElementById(`bar-${from}`);
-                const txt = document.getElementById(`pct-${from}`);
-                if (bar && txt) {
-                    const p = Math.round(vol * 100);
-                    bar.style.width = p + "%";
-                    txt.innerText = p + "%";
-                    bar.style.background = p > 50 ? "#00ff00" : (p > 20 ? "#ffff00" : "#ff4444");
-                }
             });
-        } catch (e) {}
-    }
-</script>
+        }
+    </script>
 </body>
 </html>

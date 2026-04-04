@@ -3,101 +3,75 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// 1. CREATE THE HTTP SERVER TO SERVE THE HTML FILE
 const server = http.createServer((req, res) => {
-    // This tells the server: if someone visits the URL, give them index.html
-    let filePath = path.join(__dirname, 'index.html');
-
-    fs.readFile(filePath, (err, content) => {
-        if (err) {
-            // If the file is missing, show this error
-            res.writeHead(500);
-            res.end(`Error: index.html not found in ${__dirname}`);
-            console.error("File Read Error:", err);
-            return;
-        }
-        // Success: Send the HTML file
+    // FIX: This ensures the server finds index.html even if paths are weird
+    const file = path.join(process.cwd(), 'index.html');
+    if (fs.existsSync(file)) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(content, 'utf-8');
-    });
+        fs.createReadStream(file).pipe(res);
+    } else {
+        res.writeHead(404);
+        res.end("index.html not found in " + process.cwd());
+    }
 });
 
-// 2. SETUP WEBSOCKETS ON THE SAME SERVER
 const wss = new WebSocketServer({ server });
-
-const roomSync = new Map(); 
-const roomClients = new Map(); 
+const rooms = new Map(); // RoomID -> Map(Name -> Socket)
+const syncs = new Map(); // RoomID -> Rules
 
 wss.on('connection', (ws) => {
-    let myRoom = null;
-    let myName = null;
+    let currRoom = null;
+    let currName = null;
 
     ws.on('message', (data) => {
         try {
-            const msg = JSON.parse(data);
+            const m = JSON.parse(data);
 
-            // Tracker sends volume rules
-            if (msg.type === 'sync_rules') {
-                roomSync.set(msg.roomId, msg.rules);
-                return;
+            // 1. TRACKER SYNC
+            if (m.type === 'sync_rules') {
+                syncs.set(m.roomId, m.rules);
+                const clients = rooms.get(m.roomId);
+                if (clients) {
+                    clients.forEach(c => c.send(JSON.stringify({ type: 'vol_update', rules: m.rules })));
+                }
             }
 
-            // User joins from website
-            if (msg.type === 'join') {
-                myRoom = msg.roomId;
-                myName = msg.ign;
-                if (!roomClients.has(myRoom)) roomClients.set(myRoom, new Map());
-                roomClients.get(myRoom).set(myName, ws);
-                broadcastPlayers(myRoom);
+            // 2. WEBSITE JOIN
+            if (m.type === 'join') {
+                currRoom = m.roomId;
+                currName = m.ign;
+                if (!rooms.has(currRoom)) rooms.set(currRoom, new Map());
+                rooms.get(currRoom).set(currName, ws);
+                
+                // Tell everyone in the room to refresh their list
+                const names = Array.from(rooms.get(currRoom).keys());
+                rooms.get(currRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
             }
 
-            // Audio routing logic
-            if (msg.type === 'audio' && myRoom) {
-                const rules = roomSync.get(myRoom) || [];
-                const neighbors = roomClients.get(myRoom);
-
-                neighbors.forEach((client, targetName) => {
-                    if (targetName === myName) return;
-
-                    // Match names (Case-Insensitive)
+            // 3. AUDIO ROUTING
+            if (m.type === 'audio' && currRoom) {
+                const rules = syncs.get(currRoom) || [];
+                const clients = rooms.get(currRoom);
+                clients.forEach((client, name) => {
+                    if (name === currName) return;
                     const rule = rules.find(r => 
-                        (r.a.toLowerCase() === myName.toLowerCase() && r.b.toLowerCase() === targetName.toLowerCase()) || 
-                        (r.a.toLowerCase() === targetName.toLowerCase() && r.b.toLowerCase() === myName.toLowerCase())
+                        (r.a === currName && r.b === name) || (r.a === name && r.b === currName)
                     );
-
-                    if (rule && rule.v > 0 && client.readyState === 1) {
-                        client.send(JSON.stringify({ 
-                            type: 'audio', 
-                            data: msg.data, 
-                            volume: rule.v, 
-                            from: myName 
-                        }));
+                    if (rule && rule.v > 0) {
+                        client.send(JSON.stringify({ type: 'audio', data: m.data, volume: rule.v, from: currName }));
                     }
                 });
             }
-        } catch (e) { console.error("Socket Error:", e); }
+        } catch (e) {}
     });
 
     ws.on('close', () => {
-        if (myRoom && roomClients.has(myRoom)) {
-            roomClients.get(myRoom).delete(myName);
-            broadcastPlayers(myRoom);
+        if (currRoom && rooms.has(currRoom)) {
+            rooms.get(currRoom).delete(currName);
+            const names = Array.from(rooms.get(currRoom).keys());
+            rooms.get(currRoom).forEach(c => c.send(JSON.stringify({ type: 'players', players: names })));
         }
     });
 });
 
-function broadcastPlayers(roomId) {
-    if (!roomClients.has(roomId)) return;
-    const names = Array.from(roomClients.get(roomId).keys());
-    roomClients.get(roomId).forEach(client => {
-        if (client.readyState === 1) {
-            client.send(JSON.stringify({ type: 'players', players: names }));
-        }
-    });
-}
-
-// 3. START SERVER
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+server.listen(process.env.PORT || 10000);
