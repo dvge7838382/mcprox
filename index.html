@@ -1,152 +1,30 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Minecraft Bedrock Prox Chat</title>
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-    <style>
-        body { background: #6b8fa3; font-family: 'Press Start 2P', cursive; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .menu { width: 500px; background: #c6c6c6; border: 6px solid #000; padding: 20px; text-align: center; box-shadow: inset -4px -4px #555, inset 4px 4px #fff; }
-        .button { background: #c6c6c6; border: 4px solid #000; padding: 12px; cursor: pointer; margin-top: 10px; box-shadow: inset -3px -3px #555, inset 3px 3px #fff; font-size: 10px; }
-        .button:hover { background: #b0b0b0; }
-        .button:active { box-shadow: inset 3px 3px #555, inset -3px -3px #fff; }
-        input { width: 85%; padding: 10px; margin-top: 10px; border: 3px solid #000; font-family: 'Press Start 2P', cursive; font-size: 10px; }
-        .hidden { display: none; }
-        #status, #status2 { font-size: 8px; margin-top: 12px; color: #333; height: 10px; }
-        .player-entry { padding: 8px 0; border-bottom: 2px solid #aaa; font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; display: inline-block; }
-    </style>
-</head>
-<body>
-
-<div class="menu" id="mainMenu">
-    <h3>VC ROOMS</h3>
-    <input id="ignInput" placeholder="Enter IGN">
-    <input id="roomCodeInput" placeholder="Enter Room Code">
-    <div class="button" onclick="joinRoom()">Join</div>
-    <div id="status"></div>
-</div>
-
-<div class="menu hidden" id="roomMenu">
-    <div id="roomTitle"></div>
-    <h4>Players:</h4>
-    <div id="playerList"></div>
-    <div class="button" onclick="location.reload()">Leave Room</div>
-    <div id="status2"></div>
-</div>
-
-<script>
-// HARDCODED SERVER FOR RENDER
+/* Replace the SERVER and playAudio functions in your existing script */
 const SERVER = "wss://minecraft-bedrock-prox-chat.onrender.com";
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-let ws = null, stream = null, mediaRecorder = null, myIgn = "";
-let mediaSource = new MediaSource();
-let sourceBuffer = null;
-let queue = [];
+async function playProxAudio(base64Data, volume) {
+    const buffer = base64ToArrayBuffer(base64Data);
+    const audioBuffer = await audioCtx.decodeAudioData(buffer).catch(() => null);
+    if (!audioBuffer) return;
 
-function setupAudioPlayer() {
-    const audio = new Audio();
-    audio.src = URL.createObjectURL(mediaSource);
-    mediaSource.addEventListener('sourceopen', () => {
-        sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
-        sourceBuffer.mode = 'sequence'; 
-        sourceBuffer.addEventListener('updateend', () => {
-            if (queue.length > 0 && !sourceBuffer.updating) sourceBuffer.appendBuffer(queue.shift());
-        });
-    });
-    audio.play().catch(() => console.log("Audio started via user gesture"));
+    const source = audioCtx.createBufferSource();
+    const gainNode = audioCtx.createGain();
+
+    source.buffer = audioBuffer;
+    
+    // Set volume dynamically (0.0 to 1.0)
+    gainNode.gain.value = volume; 
+
+    source.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    source.start();
 }
 
-async function joinRoom() {
-    const ign = document.getElementById("ignInput").value.trim();
-    const roomId = document.getElementById("roomCodeInput").value.trim();
-    if (!ign || !roomId) {
-        alert("Please enter IGN and Room Code");
-        return;
+ws.onmessage = async (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "players") updatePlayerList(msg.players);
+    if (msg.type === "audio") {
+        // Pass the volume number received from Render
+        playProxAudio(msg.data, msg.volume);
     }
-
-    myIgn = ign;
-    setupAudioPlayer();
-    setStatus("Connecting to Render...");
-
-    ws = new WebSocket(SERVER);
-
-    ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "join", ign, roomId }));
-        document.getElementById("mainMenu").classList.add("hidden");
-        document.getElementById("roomMenu").classList.remove("hidden");
-        document.getElementById("roomTitle").innerText = "Room: " + roomId;
-        startMic();
-    };
-
-    ws.onmessage = async (event) => {
-        try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "players") updatePlayerList(msg.players);
-            if (msg.type === "audio") {
-                const buffer = base64ToArrayBuffer(msg.data);
-                if (sourceBuffer && !sourceBuffer.updating) {
-                    sourceBuffer.appendBuffer(buffer);
-                } else {
-                    queue.push(buffer);
-                }
-            }
-        } catch (e) { console.error("Data error", e); }
-    };
-
-    ws.onerror = (err) => {
-        setStatus("Connection Failed! Is the server live?");
-        console.error("WS Error:", err);
-    };
-
-    ws.onclose = () => setStatus("Disconnected from server.");
-}
-
-async function startMic() {
-    try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, latency: 0 } 
-        });
-        mediaRecorder = new MediaRecorder(stream, { 
-            mimeType: 'audio/webm; codecs="opus"',
-            audioBitsPerSecond: 32000 
-        });
-        mediaRecorder.ondataavailable = async (e) => {
-            if (e.data.size > 0 && ws && ws.readyState === 1) {
-                const buffer = await e.data.arrayBuffer();
-                ws.send(JSON.stringify({ type: "audio", data: arrayBufferToBase64(buffer) }));
-            }
-        };
-        mediaRecorder.start(60); 
-        document.getElementById("status2").innerText = "🎙 LIVE @ 60ms";
-    } catch (err) { 
-        alert("Mic Error: Please ensure you are using HTTPS and have allowed mic access."); 
-    }
-}
-
-function updatePlayerList(players) {
-    document.getElementById("playerList").innerHTML = players
-        .map(p => `<div class="player-entry"><span class="dot"></span>${p}${p===myIgn?' (you)':''}</div>`).join("");
-}
-
-function arrayBufferToBase64(buffer) {
-    let binary = "";
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes.buffer;
-}
-
-function setStatus(msg) { 
-    const statusDiv = document.getElementById("status");
-    if (statusDiv) statusDiv.innerText = msg; 
-}
-</script>
-</body>
-</html>
+};
