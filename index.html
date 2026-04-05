@@ -1,149 +1,119 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>PROXIMITY_V5_STABLE</title>
+    <title>PROX_ZERO_STUTTER</title>
     <style>
-        body { background: #000; color: #0f0; font-family: 'Courier New', monospace; text-align: center; padding: 20px; }
-        .container { border: 1px solid #0f0; background: #080808; padding: 30px; display: inline-block; min-width: 350px; border-radius: 8px; }
-        input { background: #000; border: 1px solid #0f0; color: #0f0; padding: 10px; margin: 5px; width: 80%; }
-        button { background: #0f0; color: #000; border: none; padding: 12px; font-weight: bold; cursor: pointer; width: 88%; margin-top: 10px; }
+        body { background: #000; color: #0f0; font-family: monospace; text-align: center; padding: 20px; }
+        .box { border: 1px solid #0f0; padding: 20px; display: inline-block; }
         .hidden { display: none; }
-        .player-card { border: 1px solid #222; padding: 15px; margin: 10px 0; text-align: left; position: relative; }
-        .vol-bar { height: 4px; background: #0f0; width: 0%; transition: width 0.1s; margin-top: 8px; }
-        .log-window { background: #000; border: 1px solid #333; color: #666; font-size: 11px; height: 120px; overflow-y: auto; text-align: left; padding: 10px; margin-top: 20px; }
+        .bar { height: 4px; background: #0f0; width: 0%; transition: 0.05s; }
     </style>
 </head>
 <body>
 
-    <div id="login" class="container">
-        <h2>VOICE_LINK_ESTABLISHED</h2>
-        <input id="ign" placeholder="MC_USERNAME"> <br>
-        <input id="room" placeholder="TRACKER_CODE"> <br>
-        <button onclick="connect()">INITIALIZE_CONNECTION</button>
-    </div>
+<div id="login" class="box">
+    <input id="ign" placeholder="USERNAME">
+    <input id="room" placeholder="ROOM CODE">
+    <button onclick="boot()">START</button>
+</div>
 
-    <div id="app" class="container hidden">
-        <h3 id="room-info">CHANNEL: --</h3>
-        <div id="p-list"></div>
-        <div id="logs" class="log-window">System Booting...</div>
-        <br>
-        <button id="fix-btn" class="hidden" onclick="forceWake()" style="background: #f00; color: #fff;">! RESTORE_AUDIO_OUTPUT !</button>
-    </div>
+<div id="ui" class="box hidden">
+    <div id="p-list"></div>
+    <button id="fix" class="hidden" onclick="audioCtx.resume(); this.hidden=true;">CLICK TO ENABLE SOUND</button>
+</div>
 
-    <script>
-        const WS_URL = window.location.origin.replace(/^http/, 'ws');
-        let ws, myName, audioCtx, masterGain;
-        let pGains = {}; 
+<script>
+    const URL = window.location.origin.replace(/^http/, 'ws');
+    let ws, myName, audioCtx, nextPlayTime = 0;
+    let pGains = {};
 
-        function log(msg) {
-            const l = document.getElementById('logs');
-            l.innerHTML += `> ${msg}<br>`;
-            l.scrollTop = l.scrollHeight;
-        }
+    async function boot() {
+        myName = document.getElementById('ign').value.trim();
+        ws = new WebSocket(URL);
+        ws.binaryType = "arraybuffer";
 
-        async function connect() {
-            myName = document.getElementById('ign').value.trim();
-            const rId = document.getElementById('room').value.trim();
-            if(!myName || !rId) return alert("Fill all fields.");
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: document.getElementById('room').value }));
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('ui').classList.remove('hidden');
+            startProMic();
+        };
 
-            ws = new WebSocket(WS_URL);
-            ws.onopen = () => {
-                log("Socket Connected.");
-                ws.send(JSON.stringify({ type: 'join', ign: myName, roomId: rId }));
-                document.getElementById('login').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                document.getElementById('room-info').innerText = "ROOM_" + rId;
-                startMicLoop();
-            };
-
-            ws.onmessage = async (e) => {
+        ws.onmessage = (e) => {
+            if (e.data instanceof ArrayBuffer) {
+                handleAudioStream(e.data);
+            } else {
                 const m = JSON.parse(e.data);
                 if(m.type === 'players') render(m.players);
-                if(m.type === 'vol_update') m.rules.forEach(r => updateUI(r));
-                if(m.type === 'audio') playAudio(m.data, m.volume, m.from);
-            };
-        }
-
-        function render(list) {
-            document.getElementById('p-list').innerHTML = list.map(p => `
-                <div class="player-card">
-                    <strong>${p}</strong> ${p === myName ? '(LOCAL)' : ''}
-                    ${p !== myName ? `<div id="bar-${p}" class="vol-bar"></div>` : ''}
-                </div>
-            `).join('');
-        }
-
-        function updateUI(r) {
-            const target = (r.a.toLowerCase() === myName.toLowerCase()) ? r.b : (r.b.toLowerCase() === myName.toLowerCase() ? r.a : null);
-            const el = document.getElementById(`bar-${target}`);
-            if(el) el.style.width = (r.v * 100) + "%";
-        }
-
-        async function startMicLoop() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                log("Mic Active.");
-                
-                // This interval creates 500ms STANDALONE audio files to prevent corruption
-                setInterval(async () => {
-                    if (ws && ws.readyState === 1) {
-                        const rec = new MediaRecorder(stream);
-                        const chunks = [];
-                        rec.ondataavailable = (e) => chunks.push(e.data);
-                        rec.onstop = async () => {
-                            const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-                            const reader = new FileReader();
-                            reader.onload = () => ws.send(JSON.stringify({ type: 'audio', data: reader.result.split(',')[1] }));
-                            reader.readAsDataURL(blob);
-                        };
-                        rec.start();
-                        setTimeout(() => rec.stop(), 500);
-                    }
-                }, 600);
-            } catch(e) { log("ERR: Mic Denied. Check HTTPS."); }
-        }
-
-        function forceWake() {
-            if(audioCtx) audioCtx.resume();
-            document.getElementById('fix-btn').classList.add('hidden');
-            log("Audio Output Resumed.");
-        }
-
-        async function playAudio(data, vol, from) {
-            if(!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                masterGain = audioCtx.createGain();
-                masterGain.connect(audioCtx.destination);
-                log("Audio Engine Ready.");
+                if(m.type === 'vol_update') m.rules.forEach(r => update(r));
             }
-            if(audioCtx.state === 'suspended') {
-                document.getElementById('fix-btn').classList.remove('hidden');
-                return;
-            }
+        };
+    }
 
-            try {
-                const binary = atob(data);
-                const array = new Uint8Array(binary.length);
-                for(let i=0; i<binary.length; i++) array[i] = binary.charCodeAt(i);
-                
-                audioCtx.decodeAudioData(array.buffer, (buffer) => {
-                    const source = audioCtx.createBufferSource();
-                    if(!pGains[from]) {
-                        pGains[from] = audioCtx.createGain();
-                        pGains[from].connect(masterGain);
-                    }
-                    source.buffer = buffer;
-                    // Filter: Smooths the volume over 0.1s to stop cut-offs
-                    pGains[from].gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
-                    source.connect(pGains[from]);
-                    source.start(0);
-                }, (e) => {
-                    // This block will catch any remaining network jitter
-                    console.warn("Jitter Skip");
-                });
-            } catch(e) {}
-        }
-    </script>
+    async function startProMic() {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = audioCtx.createMediaStreamSource(stream);
+        
+        // Grab tiny 1024 sample chunks (~23ms of audio)
+        const processor = audioCtx.createScriptProcessor(1024, 1, 1);
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        processor.onaudioprocess = (e) => {
+            const input = e.inputBuffer.getChannelData(0);
+            // Convert to 16-bit Int to save 50% bandwidth
+            const output = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+                output[i] = Math.max(-1, Math.min(1, input[i])) * 0x7FFF;
+            }
+            if (ws.readyState === 1) ws.send(output.buffer);
+        };
+    }
+
+    function handleAudioStream(buffer) {
+        if (audioCtx.state === 'suspended') { document.getElementById('fix').hidden = false; return; }
+
+        const view = new DataView(buffer);
+        const vol = view.getFloat32(0, true);
+        const rawAudio = new Int16Array(buffer.slice(4));
+
+        // Convert back to Float32 for Web Audio
+        const floatData = new Float32Array(rawAudio.length);
+        for (let i = 0; i < rawAudio.length; i++) floatData[i] = rawAudio[i] / 0x7FFF;
+
+        const audioBuf = audioCtx.createBuffer(1, floatData.length, audioCtx.sampleRate);
+        audioBuf.getChannelData(0).set(floatData);
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuf;
+
+        // --- THE STUTTER FIX: SCHEDULING ---
+        // If we fall behind, catch up to the current time
+        const currentTime = audioCtx.currentTime;
+        if (nextPlayTime < currentTime) nextPlayTime = currentTime + 0.01;
+
+        const gain = audioCtx.createGain();
+        gain.gain.setTargetAtTime(vol, nextPlayTime, 0.01);
+        
+        source.connect(gain).connect(audioCtx.destination);
+        source.start(nextPlayTime);
+
+        // Advance the clock by the duration of the chunk
+        nextPlayTime += audioBuf.duration;
+    }
+
+    function render(list) {
+        document.getElementById('p-list').innerHTML = list.map(p => `
+            <div>${p} <div id="bar-${p}" class="bar"></div></div>
+        `).join('');
+    }
+
+    function update(r) {
+        const target = (r.a === myName) ? r.b : (r.b === myName ? r.a : null);
+        const el = document.getElementById(`bar-${target}`);
+        if(el) el.style.width = (r.v * 100) + "%";
+    }
+</script>
 </body>
 </html>
